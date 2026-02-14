@@ -28,9 +28,42 @@ class TapestryGraph {
     this._initSVG();
     this._initSimulation();
     this._initZoom();
+    this._initTooltip();
 
     window.addEventListener('resize', () => this._resize());
     this._resize();
+  }
+
+  _initTooltip() {
+    this._tooltip = document.createElement('div');
+    this._tooltip.className = 'graph-tooltip';
+    this.container.appendChild(this._tooltip);
+  }
+
+  _showTooltip(nodeId, event) {
+    const node = this.nodeMap.get(nodeId);
+    if (!node || !node.description) return;
+    const desc = this._stripTitleFromDesc(node.title, node.description);
+    this._tooltip.textContent = desc;
+    this._tooltip.classList.add('visible');
+    this._positionTooltip(event);
+  }
+
+  _positionTooltip(event) {
+    const rect = this.container.getBoundingClientRect();
+    let x = event.clientX - rect.left + 12;
+    let y = event.clientY - rect.top + 12;
+    // Clamp so it doesn't overflow
+    const tw = this._tooltip.offsetWidth;
+    const th = this._tooltip.offsetHeight;
+    if (x + tw > rect.width - 8) x = event.clientX - rect.left - tw - 8;
+    if (y + th > rect.height - 8) y = event.clientY - rect.top - th - 8;
+    this._tooltip.style.left = x + 'px';
+    this._tooltip.style.top = y + 'px';
+  }
+
+  _hideTooltip() {
+    this._tooltip.classList.remove('visible');
   }
 
   _initSVG() {
@@ -67,6 +100,22 @@ class TapestryGraph {
     this.edgeGroup = this.g.append('g').attr('class', 'edges');
     this.edgeLabelGroup = this.g.append('g').attr('class', 'edge-labels');
     this.nodeGroup = this.g.append('g').attr('class', 'nodes');
+
+    // Rubberband line for connection mode
+    this._rubberband = this.g.append('line')
+      .attr('class', 'rubberband-line')
+      .style('display', 'none');
+    this._rubberbandSourceId = null;
+
+    this.svg.on('mousemove.rubberband', (event) => {
+      if (!this._rubberbandSourceId) return;
+      const source = this.nodeMap.get(this._rubberbandSourceId);
+      if (!source) return;
+      const [mx, my] = d3.pointer(event, this.g.node());
+      this._rubberband
+        .attr('x1', source.x).attr('y1', source.y)
+        .attr('x2', mx).attr('y2', my);
+    });
   }
 
   _initSimulation() {
@@ -174,6 +223,31 @@ class TapestryGraph {
   _truncate(text, maxLen) {
     if (!text) return '';
     return text.length > maxLen ? text.substring(0, maxLen - 1) + '…' : text;
+  }
+
+  // Strip title (or partial title words) from the start of a description.
+  // e.g. title="Ludwig Wittgenstein", desc="Wittgenstein was an Austrian..." → "was an Austrian..."
+  _stripTitleFromDesc(title, desc) {
+    if (!desc || !title) return desc || '';
+    const titleWords = title.toLowerCase().split(/\s+/);
+    let d = desc.replace(/^\s+/, '');
+    // Greedily strip leading words that appear in the title
+    let stripped = true;
+    while (stripped) {
+      stripped = false;
+      for (const word of titleWords) {
+        if (word.length < 2) continue;
+        const re = new RegExp(`^${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s,;:\\-]*`, 'i');
+        if (re.test(d)) {
+          d = d.replace(re, '');
+          stripped = true;
+        }
+      }
+    }
+    // If we stripped everything or nearly everything, fall back to original
+    if (d.length < 5) return desc;
+    // Lowercase the first char since we may have removed the sentence subject
+    return d.charAt(0).toLowerCase() + d.slice(1);
   }
 
   // --- Render ---
@@ -371,8 +445,12 @@ class TapestryGraph {
 
     // Hover
     nodeEnter.on('mouseenter', function(event, d) {
+      self._showTooltip(d.id, event);
       if (self.onNodeHover) self.onNodeHover(d.id);
+    }).on('mousemove.tooltip', function(event, d) {
+      if (self._tooltip.classList.contains('visible')) self._positionTooltip(event);
     }).on('mouseleave', function(event, d) {
+      self._hideTooltip();
       if (self.onNodeUnhover) self.onNodeUnhover(d.id);
     });
 
@@ -383,7 +461,7 @@ class TapestryGraph {
       .text(d => this._truncate(d.title, 24));
 
     mergedNodes.select('.node-description')
-      .text(d => this._truncate(d.description, 30));
+      .text(d => this._truncate(this._stripTitleFromDesc(d.title, d.description), 30));
 
     mergedNodes.select('.node-card')
       .classed('selected', d => d.id === this.selectedNodeId);
@@ -496,6 +574,14 @@ class TapestryGraph {
     this.render();
   }
 
+  updateEdgeLabel(edgeId, label) {
+    const edge = this.edgeMap.get(edgeId);
+    if (edge) {
+      edge.label = label;
+      this.render(false);
+    }
+  }
+
   removeEdge(edgeId) {
     this.edges = this.edges.filter(e => e.id !== edgeId);
     this.edgeMap.delete(edgeId);
@@ -516,6 +602,22 @@ class TapestryGraph {
   setSelected(nodeId) {
     this.selectedNodeId = nodeId;
     this.render(false);
+  }
+
+  showRubberband(sourceNodeId) {
+    this._rubberbandSourceId = sourceNodeId;
+    const source = this.nodeMap.get(sourceNodeId);
+    if (source) {
+      this._rubberband
+        .attr('x1', source.x).attr('y1', source.y)
+        .attr('x2', source.x).attr('y2', source.y)
+        .style('display', null);
+    }
+  }
+
+  hideRubberband() {
+    this._rubberbandSourceId = null;
+    this._rubberband.style('display', 'none');
   }
 
   setUserHover(userId, nodeId, details) {

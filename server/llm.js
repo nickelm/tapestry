@@ -129,18 +129,22 @@ Respond ONLY with valid JSON array, no markdown fences:
     }
   }
 
-  async describeConcept(title, breadcrumb = []) {
-    const context = breadcrumb.length > 0
-      ? `Given the context of a discussion about ${breadcrumb.join(' \u2192 ')}, provide`
-      : 'Provide';
+  async describeConcept(title, breadcrumb = [], excerpt = '') {
+    let content;
+    if (excerpt) {
+      const context = breadcrumb.length > 0 ? breadcrumb.join(' \u2192 ') : 'a topic';
+      content = `Given the following excerpt from a discussion about ${context}:\n"${excerpt}"\n\nWrite a one-sentence description of the concept "${title}" suitable for a knowledge graph node.`;
+    } else {
+      const prefix = breadcrumb.length > 0
+        ? `Given the context of a discussion about ${breadcrumb.join(' \u2192 ')}, provide`
+        : 'Provide';
+      content = `${prefix} a one-sentence description of the concept "${title}".`;
+    }
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 100,
       system: 'You provide concise concept descriptions. Respond with ONLY a single sentence. No formatting.',
-      messages: [{
-        role: 'user',
-        content: `${context} a one-sentence description of the concept "${title}".`
-      }]
+      messages: [{ role: 'user', content }]
     });
     return response.content[0].text.trim();
   }

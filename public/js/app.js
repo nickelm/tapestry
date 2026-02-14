@@ -16,6 +16,9 @@ let selectedRoomId = null;
 let myUpvotes = new Set();
 let graphTitleMap = new Map(); // lowercase title -> nodeId (F10: shared graph awareness)
 
+// ========== MARKED.JS CONFIG ==========
+marked.setOptions({ gfm: true, breaks: true });
+
 // ========== THREAD MODEL ==========
 
 function createThreadNode(prompt, parentId = null, origin = 'manual') {
@@ -209,6 +212,10 @@ socket.on('node-upvoted', ({ id, upvotes }) => {
 
 socket.on('edge-added', (edge) => {
   graph.addEdge(edge);
+});
+
+socket.on('edge-label-updated', ({ id, label }) => {
+  graph.updateEdgeLabel(id, label);
 });
 
 socket.on('edge-removed', ({ id }) => {
@@ -423,6 +430,58 @@ function appendChatMessage(role, text) {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+// Highlight a single concept title in DOM text nodes (skips code/pre elements).
+// Returns true if a match was found and highlighted, false otherwise.
+function highlightConceptInDOM(container, concept, index) {
+  const titleLower = concept.title.toLowerCase();
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      // Skip text inside <code> and <pre> elements
+      let parent = node.parentNode;
+      while (parent && parent !== container) {
+        if (parent.tagName === 'CODE' || parent.tagName === 'PRE') return NodeFilter.FILTER_REJECT;
+        parent = parent.parentNode;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const matchIdx = node.textContent.toLowerCase().indexOf(titleLower);
+    if (matchIdx === -1) continue;
+
+    // Split text node and wrap the match in a concept span
+    const matchEnd = matchIdx + concept.title.length;
+    const before = node.textContent.substring(0, matchIdx);
+    const matchText = node.textContent.substring(matchIdx, matchEnd);
+    const after = node.textContent.substring(matchEnd);
+
+    const secondaryClass = concept.type === 'secondary' ? ' secondary' : '';
+    const inGraphClass = graphTitleMap.has(concept.title.toLowerCase()) ? ' in-graph' : '';
+    const graphNodeIdAttr = graphTitleMap.has(concept.title.toLowerCase())
+      ? graphTitleMap.get(concept.title.toLowerCase()) : '';
+
+    const span = document.createElement('span');
+    span.className = `concept-inline${secondaryClass}${inGraphClass}`;
+    span.dataset.conceptTitle = concept.title;
+    span.dataset.conceptDescription = concept.description || '';
+    span.dataset.conceptType = concept.type || 'primary';
+    span.dataset.conceptIndex = index;
+    if (graphNodeIdAttr) span.dataset.graphNodeId = graphNodeIdAttr;
+    span.textContent = matchText;
+
+    const parentNode = node.parentNode;
+    if (after) parentNode.insertBefore(document.createTextNode(after), node.nextSibling);
+    parentNode.insertBefore(span, node.nextSibling);
+    if (before) parentNode.insertBefore(document.createTextNode(before), span);
+    parentNode.removeChild(node);
+
+    return true; // Only highlight first occurrence
+  }
+  return false;
+}
+
 function createChatResponseElement(text, concepts) {
   const el = document.createElement('div');
   el.className = 'chat-msg assistant';
@@ -440,35 +499,22 @@ function createChatResponseElement(text, concepts) {
     }
   }
 
-  // Convert text to paragraphs
-  const paragraphs = text.split('\n\n').filter(p => p.trim());
-  let html = paragraphs.map(p => `<p>${escapeHtml(p)}</p>`).join('');
+  // Render markdown to HTML
+  el.innerHTML = marked.parse(text);
 
-  // Inline concept highlighting: match each concept title in the response text
+  // Inline concept highlighting: walk DOM text nodes to find and wrap matches
   const unmatchedConcepts = [];
   if (allConcepts.length > 0) {
     allConcepts.forEach((concept, i) => {
-      const escapedTitle = escapeHtml(concept.title);
-      const regexSafeTitle = escapedTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Match concept title outside of HTML tags (case-insensitive, first occurrence only)
-      const regex = new RegExp(`(?![^<]*>)(${regexSafeTitle})`, 'i');
-
-      if (regex.test(html)) {
-        const secondaryClass = concept.type === 'secondary' ? ' secondary' : '';
-        const inGraphClass = graphTitleMap.has(concept.title.toLowerCase()) ? ' in-graph' : '';
-        const graphNodeIdAttr = graphTitleMap.has(concept.title.toLowerCase())
-          ? ` data-graph-node-id="${graphTitleMap.get(concept.title.toLowerCase())}"` : '';
-        html = html.replace(regex,
-          `<span class="concept-inline${secondaryClass}${inGraphClass}" data-concept-title="${escapeAttr(concept.title)}" data-concept-description="${escapeAttr(concept.description || '')}" data-concept-type="${concept.type || 'primary'}" data-concept-index="${i}"${graphNodeIdAttr}>$1</span>`
-        );
-      } else {
+      if (!highlightConceptInDOM(el, concept, i)) {
         unmatchedConcepts.push({ concept, index: i });
       }
     });
 
     // Fallback: append chips for concepts not found in text
     if (unmatchedConcepts.length > 0) {
-      html += '<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px;">';
+      const chipsDiv = document.createElement('div');
+      chipsDiv.style.cssText = 'margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px;';
       unmatchedConcepts.forEach(({ concept, index }) => {
         const secondaryClass = concept.type === 'secondary' ? ' secondary' : '';
         const chipInGraph = graphTitleMap.has(concept.title.toLowerCase());
@@ -476,20 +522,18 @@ function createChatResponseElement(text, concepts) {
         const chipGraphAttr = chipInGraph
           ? ` data-graph-node-id="${graphTitleMap.get(concept.title.toLowerCase())}"` : '';
         const chipBtnText = chipInGraph ? '\u25C9' : '+';
-        html += `<span class="concept-chip${secondaryClass}${chipInGraphClass}" data-index="${index}" data-title="${escapeAttr(concept.title)}" data-description="${escapeAttr(concept.description || '')}" data-type="${concept.type || 'primary'}"${chipGraphAttr} title="${escapeHtml(concept.title)}">
+        chipsDiv.innerHTML += `<span class="concept-chip${secondaryClass}${chipInGraphClass}" data-index="${index}" data-title="${escapeAttr(concept.title)}" data-description="${escapeAttr(concept.description || '')}" data-type="${concept.type || 'primary'}"${chipGraphAttr} title="${escapeHtml(concept.title)}">
           ${escapeHtml(concept.title)}
           <button class="harvest-btn" data-index="${index}">${chipBtnText}</button>
         </span>`;
       });
-      html += '</div>';
+      el.appendChild(chipsDiv);
     }
   }
 
-  el.innerHTML = html;
-
   // Attach harvest handlers for fallback chip buttons
   el.querySelectorAll('.harvest-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const chip = btn.closest('.concept-chip');
 
@@ -499,13 +543,20 @@ function createChatResponseElement(text, concepts) {
         return;
       }
 
-      const title = chip.dataset.title;
-      const description = chip.dataset.description;
-
       if (chip.classList.contains('harvested')) return;
+
+      const title = chip.dataset.title;
+      let description = chip.dataset.description;
 
       chip.classList.add('harvested');
       btn.textContent = '\u2713';
+
+      // Auto-generate description if empty
+      if (!description) {
+        const breadcrumb = getBreadcrumbForSpan(chip);
+        const generated = await fetchConceptDescription(title, breadcrumb);
+        if (generated) description = generated;
+      }
 
       socket.emit('harvest', { title, description });
     });
@@ -582,14 +633,14 @@ function getBreadcrumbForSpan(span) {
   return thread ? thread.breadcrumb : [];
 }
 
-async function fetchConceptDescription(title, breadcrumb) {
+async function fetchConceptDescription(title, breadcrumb, excerpt = '') {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2000);
+  const timeout = setTimeout(() => controller.abort(), 3000);
   try {
     const res = await fetch(`/api/rooms/${currentRoom.id}/describe-concept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, breadcrumb }),
+      body: JSON.stringify({ title, breadcrumb, excerpt }),
       signal: controller.signal
     });
     clearTimeout(timeout);
@@ -769,8 +820,20 @@ tooltipHarvestBtn.addEventListener('click', (e) => {
 
   // Populate and show harvest form
   harvestFormTitle.value = span.dataset.conceptTitle;
-  harvestFormDesc.value = span.dataset.conceptDescription;
+  harvestFormDesc.value = span.dataset.conceptDescription || '';
   activeConceptSpan = span; // restore after hideTooltip cleared it
+
+  // Auto-generate description if not cached (user never hovered to trigger lazy-load)
+  if (!harvestFormDesc.value) {
+    harvestFormDesc.placeholder = 'Generating description\u2026';
+    const breadcrumb = getBreadcrumbForSpan(span);
+    fetchConceptDescription(span.dataset.conceptTitle, breadcrumb).then(desc => {
+      if (!harvestFormDesc.value) {
+        harvestFormDesc.value = desc || '';
+      }
+      harvestFormDesc.placeholder = 'Add a description...';
+    });
+  }
 
   // Position below the span
   const rect = span.getBoundingClientRect();
@@ -943,12 +1006,12 @@ selectionHarvestBtn.addEventListener('click', (e) => {
   // Fetch description for free text if none available
   if (!description) {
     harvestFormDesc.placeholder = 'Generating description\u2026';
-    fetchConceptDescription(title, breadcrumb).then(desc => {
+    fetchConceptDescription(title, breadcrumb, selectedText).then(desc => {
       // Only populate if user hasn't typed anything yet
       if (!harvestFormDesc.value) {
         harvestFormDesc.value = desc || '';
       }
-      harvestFormDesc.placeholder = '';
+      harvestFormDesc.placeholder = 'Add a description...';
     });
   }
 
@@ -1238,11 +1301,11 @@ contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
     if (!contextNodeId) return;
 
     switch (action) {
+      case 'explore':
+        handleNodeDoubleClick(contextNodeId);
+        break;
       case 'expand':
         socket.emit('expand-node', { nodeId: contextNodeId });
-        break;
-      case 'elaborate':
-        socket.emit('elaborate-node', { nodeId: contextNodeId });
         break;
       case 'edit':
         showEditNodeModal(contextNodeId);
@@ -1320,12 +1383,14 @@ editNodeGenerateBtn.addEventListener('click', async () => {
 function startConnectionMode(sourceId) {
   connectionSourceId = sourceId;
   graph.setSelected(sourceId);
+  graph.showRubberband(sourceId);
   document.getElementById('connection-banner').classList.add('visible');
 }
 
 function cancelConnectionMode() {
   connectionSourceId = null;
   graph.setSelected(null);
+  graph.hideRubberband();
   document.getElementById('connection-banner').classList.remove('visible');
 }
 

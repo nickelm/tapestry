@@ -78,10 +78,10 @@ app.post('/api/rooms/:roomId/seed', (req, res) => {
 });
 
 app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
-  const { title, breadcrumb } = req.body;
+  const { title, breadcrumb, excerpt } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
   try {
-    const description = await llm.describeConcept(title, breadcrumb || []);
+    const description = await llm.describeConcept(title, breadcrumb || [], excerpt || '');
     res.json({ description });
   } catch (e) {
     console.error('describe-concept error:', e.message);
@@ -225,16 +225,23 @@ io.on('connection', (socket) => {
     const target = queryOne('SELECT * FROM nodes WHERE id = ?', [targetId]);
     if (!source || !target) return;
 
+    // Immediately add edge with placeholder label for instant visual feedback
+    const edgeId = uuidv4();
+    const placeholder = '...';
+    run('INSERT INTO edges (id, room_id, source_id, target_id, label, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+      [edgeId, currentRoom, sourceId, targetId, placeholder, currentUser.id]);
+
+    io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: sourceId, target_id: targetId, label: placeholder, created_by: currentUser.id });
+
+    // Generate label asynchronously, then update
     let label = 'relates to';
     try { label = await llm.generateRelationshipLabel(source, target); } catch (e) {}
 
-    const edgeId = uuidv4();
-    run('INSERT INTO edges (id, room_id, source_id, target_id, label, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-      [edgeId, currentRoom, sourceId, targetId, label, currentUser.id]);
+    run('UPDATE edges SET label = ? WHERE id = ?', [label, edgeId]);
     run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [currentRoom, currentUser.id, currentUser.name, 'connected', 'edge', edgeId, `${source.title} → ${target.title}`]);
 
-    io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: sourceId, target_id: targetId, label, created_by: currentUser.id });
+    io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label });
     io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'connected', target_type: 'edge', target_id: edgeId, details: `${source.title} → ${target.title}: "${label}"`, created_at: new Date().toISOString() });
     saveDb();
   });
