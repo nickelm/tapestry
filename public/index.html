@@ -38,7 +38,11 @@
     <!-- Chat Panel -->
     <div id="chat-panel">
       <div class="chat-header">
-        <h2>Chat</h2>
+        <h2>Personal Workspace</h2>
+        <div class="chat-header-actions">
+          <button class="chat-header-btn" id="clear-workspace-btn" title="Clear workspace">Clear</button>
+          <button class="leave-room-btn" id="leave-room-btn" title="Back to rooms">&larr; Rooms</button>
+        </div>
       </div>
       <div class="chat-toggle" id="chat-toggle" title="Toggle chat">◀</div>
 
@@ -46,10 +50,12 @@
 
       <div class="chat-input-area">
         <div class="chat-input-row">
-          <textarea id="chat-input" placeholder="Ask about concepts..." rows="1"></textarea>
+          <textarea id="chat-input" placeholder="Explore a concept..." rows="1"></textarea>
           <button id="chat-send">Send</button>
+          <button id="chat-cancel" class="chat-cancel-btn" style="display: none;">Cancel</button>
         </div>
       </div>
+      <div class="chat-resize-handle" id="chat-resize-handle"></div>
     </div>
 
     <!-- Graph Area -->
@@ -97,6 +103,9 @@
     <div class="context-menu-item" data-action="elaborate">
       <span class="cm-icon">✎</span> Elaborate
     </div>
+    <div class="context-menu-item" data-action="edit">
+      <span class="cm-icon">&#9998;</span> Edit
+    </div>
     <div class="context-menu-item" data-action="connect">
       <span class="cm-icon">⤫</span> Connect to...
     </div>
@@ -124,6 +133,52 @@
         <button id="similar-cancel">Cancel</button>
       </div>
     </div>
+  </div>
+
+  <!-- Edit Node Modal -->
+  <div class="modal-overlay" id="edit-node-modal">
+    <div class="modal-card">
+      <h3>Edit concept</h3>
+      <label class="harvest-form-label">Title</label>
+      <input type="text" class="harvest-form-input" id="edit-node-title">
+      <div class="edit-node-desc-header">
+        <label class="harvest-form-label">Description</label>
+        <button class="edit-node-generate-btn" id="edit-node-generate" title="Generate description with AI">&#10024; Generate</button>
+      </div>
+      <textarea class="harvest-form-textarea" id="edit-node-desc" rows="3"></textarea>
+      <div class="modal-actions">
+        <button id="edit-node-cancel">Cancel</button>
+        <button id="edit-node-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Concept Tooltip (F3) -->
+  <div class="concept-tooltip" id="concept-tooltip">
+    <strong class="concept-tooltip-title"></strong>
+    <p class="concept-tooltip-desc"></p>
+    <div class="concept-tooltip-actions">
+      <button class="concept-tooltip-btn harvest" id="tooltip-harvest-btn">+ Harvest</button>
+      <button class="concept-tooltip-btn explore" id="tooltip-explore-btn">→ Explore</button>
+    </div>
+  </div>
+
+  <!-- Harvest Inline Form (F6) -->
+  <div class="harvest-inline-form" id="harvest-inline-form">
+    <label class="harvest-form-label">Title</label>
+    <input type="text" class="harvest-form-input" id="harvest-form-title">
+    <label class="harvest-form-label">Description</label>
+    <textarea class="harvest-form-textarea" id="harvest-form-desc" rows="2"></textarea>
+    <div class="harvest-form-actions">
+      <button class="harvest-form-btn cancel" id="harvest-form-cancel">Cancel</button>
+      <button class="harvest-form-btn submit" id="harvest-form-submit">Add to Graph →</button>
+    </div>
+  </div>
+
+  <!-- Selection Toolbar (F5) -->
+  <div class="selection-toolbar" id="selection-toolbar">
+    <button class="selection-toolbar-btn harvest" id="selection-harvest-btn">+ Harvest</button>
+    <button class="selection-toolbar-btn explore" id="selection-explore-btn">→ Explore</button>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>

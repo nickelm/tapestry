@@ -8,33 +8,37 @@ class LLMService {
     this.taskModel = 'claude-haiku-4-5-20251001';
   }
 
-  async chatWithExtraction(messages, existingConcepts = []) {
+  async chatWithExtraction(messages, existingConcepts = [], { signal } = {}) {
     const existingList = existingConcepts.length > 0
       ? `\n\nExisting concepts in the shared knowledge graph (avoid duplicating these):\n${existingConcepts.map(c => `- ${c.title}: ${c.description}`).join('\n')}`
       : '';
 
-    const systemPrompt = `You are a knowledgeable assistant helping a student explore and understand concepts. 
+    const systemPrompt = `You are a knowledgeable assistant helping a student explore and understand concepts.
 Respond naturally and helpfully to the student's question.
 
 After your response, you MUST include a JSON block with extracted concepts. This block must be wrapped in <concepts> tags.
 Each concept should be a key idea, entity, or term from your response that could be a node in a knowledge graph.
 
+Extract 8-12 concepts from your response. Include:
+- Primary concepts: the main topics and components you explained
+- Secondary concepts: related ideas, people, papers, or techniques mentioned but not fully explained
+
 Format:
 <concepts>
 [
-  {"title": "Short concept name", "description": "One sentence description"},
-  {"title": "Another concept", "description": "One sentence description"}
+  {"title": "Short concept name", "type": "primary"},
+  {"title": "Related idea or reference", "type": "secondary"}
 ]
 </concepts>
 
-Extract 2-6 concepts per response. Be specific rather than generic. Focus on the most important, concrete concepts.${existingList}`;
+Do NOT include descriptions — titles only. Be specific rather than generic.${existingList}`;
 
     const response = await this.client.messages.create({
       model: this.chatModel,
       max_tokens: 1500,
       system: systemPrompt,
       messages: messages
-    });
+    }, { signal });
 
     const text = response.content[0].text;
 
@@ -123,6 +127,22 @@ Respond ONLY with valid JSON array, no markdown fences:
       console.error('Failed to parse merge suggestion:', e);
       return { title: concept1.title, description: concept1.description };
     }
+  }
+
+  async describeConcept(title, breadcrumb = []) {
+    const context = breadcrumb.length > 0
+      ? `Given the context of a discussion about ${breadcrumb.join(' \u2192 ')}, provide`
+      : 'Provide';
+    const response = await this.client.messages.create({
+      model: this.taskModel,
+      max_tokens: 100,
+      system: 'You provide concise concept descriptions. Respond with ONLY a single sentence. No formatting.',
+      messages: [{
+        role: 'user',
+        content: `${context} a one-sentence description of the concept "${title}".`
+      }]
+    });
+    return response.content[0].text.trim();
   }
 
   async findSimilarConcepts(newConcept, existingConcepts) {

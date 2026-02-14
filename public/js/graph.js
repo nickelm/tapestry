@@ -10,9 +10,11 @@ class TapestryGraph {
     this.selectedNodeId = null;
     this.hoveredNodeId = null;
     this.userHovers = new Map(); // userId -> nodeId
+    this._clickTimer = null;
 
     this.onNodeContext = null; // callback(nodeId, x, y)
     this.onNodeClick = null;
+    this.onNodeDoubleClick = null;
     this.onNodeDragEnd = null;
     this.onNodeHover = null;
     this.onNodeUnhover = null;
@@ -335,10 +337,29 @@ class TapestryGraph {
       })
     );
 
-    // Click
+    // Click (delayed to allow double-click detection)
     nodeEnter.on('click', function(event, d) {
       event.stopPropagation();
-      if (self.onNodeClick) self.onNodeClick(d.id, event);
+      if (self._clickTimer) {
+        clearTimeout(self._clickTimer);
+        self._clickTimer = null;
+        return;
+      }
+      self._clickTimer = setTimeout(() => {
+        self._clickTimer = null;
+        if (self.onNodeClick) self.onNodeClick(d.id, event);
+      }, 250);
+    });
+
+    // Double-click
+    nodeEnter.on('dblclick', function(event, d) {
+      event.stopPropagation();
+      event.preventDefault();
+      if (self._clickTimer) {
+        clearTimeout(self._clickTimer);
+        self._clickTimer = null;
+      }
+      if (self.onNodeDoubleClick) self.onNodeDoubleClick(d.id);
     });
 
     // Context menu
@@ -529,6 +550,25 @@ class TapestryGraph {
 
     this.svg.transition().duration(500)
       .call(this.zoom.transform, d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale));
+  }
+
+  focusNode(nodeId) {
+    const node = this.nodeMap.get(nodeId);
+    if (!node) return;
+
+    const scale = 1.2;
+    const tx = this.width / 2 - node.x * scale;
+    const ty = this.height / 2 - node.y * scale;
+
+    this.svg.transition().duration(600)
+      .call(this.zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale))
+      .on('end', () => {
+        const card = this.nodeGroup.selectAll('.node-group')
+          .filter(d => d.id === nodeId)
+          .select('.node-card');
+        card.classed('node-highlight-pulse', true);
+        setTimeout(() => card.classed('node-highlight-pulse', false), 1500);
+      });
   }
 
   autoLayout() {

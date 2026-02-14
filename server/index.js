@@ -77,6 +77,18 @@ app.post('/api/rooms/:roomId/seed', (req, res) => {
   res.json({ seeded });
 });
 
+app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
+  const { title, breadcrumb } = req.body;
+  if (!title) return res.status(400).json({ error: 'title required' });
+  try {
+    const description = await llm.describeConcept(title, breadcrumb || []);
+    res.json({ description });
+  } catch (e) {
+    console.error('describe-concept error:', e.message);
+    res.status(500).json({ error: 'Failed to generate description' });
+  }
+});
+
 // --- SOCKET.IO ---
 
 const COLORS = [
@@ -92,6 +104,7 @@ let colorIndex = 0;
 io.on('connection', (socket) => {
   let currentUser = null;
   let currentRoom = null;
+  let activeAbortController = null;
 
   socket.on('join-room', ({ roomId, userName }) => {
     const room = queryOne('SELECT * FROM rooms WHERE id = ?', [roomId]);
@@ -120,13 +133,38 @@ io.on('connection', (socket) => {
 
   socket.on('chat', async ({ messages }) => {
     if (!currentUser || !currentRoom) return;
+
+    // Abort any previous pending request
+    if (activeAbortController) {
+      activeAbortController.abort();
+    }
+
+    const abortController = new AbortController();
+    activeAbortController = abortController;
+
     try {
       const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
-      const result = await llm.chatWithExtraction(messages, existing);
-      socket.emit('chat-response', result);
+      const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal });
+      if (!abortController.signal.aborted) {
+        socket.emit('chat-response', result);
+      }
     } catch (err) {
+      if (err.name === 'AbortError' || abortController.signal.aborted) {
+        return; // Request was cancelled
+      }
       console.error('Chat error:', err);
       socket.emit('chat-error', { message: 'LLM request failed.' });
+    } finally {
+      if (activeAbortController === abortController) {
+        activeAbortController = null;
+      }
+    }
+  });
+
+  socket.on('cancel-chat', () => {
+    if (activeAbortController) {
+      activeAbortController.abort();
+      activeAbortController = null;
     }
   });
 
@@ -256,6 +294,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('edit-node', ({ nodeId, title, description }) => {
+    if (!currentUser || !currentRoom) return;
+    const node = queryOne('SELECT * FROM nodes WHERE id = ?', [nodeId]);
+    if (!node) return;
+
+    const updates = {};
+    if (title !== undefined) updates.title = title;
+    if (description !== undefined) updates.description = description;
+
+    const setClauses = Object.keys(updates).map(k => `${k} = ?`);
+    if (setClauses.length === 0) return;
+    run(`UPDATE nodes SET ${setClauses.join(', ')} WHERE id = ?`, [...Object.values(updates), nodeId]);
+
+    io.to(currentRoom).emit('node-updated', { id: nodeId, ...updates });
+    io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'edited', target_type: 'node', target_id: nodeId, details: updates.title || node.title, created_at: new Date().toISOString() });
+    saveDb();
+  });
+
   socket.on('prune-node', ({ nodeId }) => {
     if (!currentUser || !currentRoom) return;
     const node = queryOne('SELECT * FROM nodes WHERE id = ?', [nodeId]);
@@ -348,6 +404,25 @@ io.on('connection', (socket) => {
   socket.on('unhover-node', () => {
     if (!currentUser || !currentRoom) return;
     socket.to(currentRoom).emit('user-unhover', { userId: currentUser.id });
+  });
+
+  socket.on('leave-room', () => {
+    if (currentUser && currentRoom) {
+      socket.leave(currentRoom);
+      io.to(currentRoom).emit('user-left', { userId: currentUser.id });
+      io.to(currentRoom).emit('activity', {
+        user_name: currentUser.name,
+        action: 'left',
+        target_type: 'room',
+        details: '',
+        created_at: new Date().toISOString()
+      });
+      const roomSize = io.sockets.adapter.rooms.get(currentRoom)?.size || 0;
+      io.to(currentRoom).emit('user-count', { count: roomSize });
+      currentUser = null;
+      currentRoom = null;
+    }
+    socket.emit('left-room');
   });
 
   socket.on('disconnect', () => {
