@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tapestry — Collaborative Knowledge Curation</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen">
+    <div class="login-card">
+      <h1>Tapestry</h1>
+      <p class="subtitle">Collaborative knowledge curation</p>
+
+      <label>Your name</label>
+      <input type="text" id="login-name" placeholder="Enter your name" autocomplete="off">
+
+      <label>Room</label>
+      <div class="room-list" id="room-list">
+        <div style="font-size: 13px; color: var(--text-muted); padding: 8px;">Loading rooms...</div>
+      </div>
+
+      <span class="create-room-toggle" id="create-room-toggle">+ Create new room</span>
+      <div class="create-room-row" id="create-room-row">
+        <input type="text" id="new-room-name" placeholder="Room name">
+        <button id="create-room-btn">Create</button>
+      </div>
+
+      <button id="join-btn" disabled>Join Room</button>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="app-screen">
+
+    <!-- Chat Panel -->
+    <div id="chat-panel">
+      <div class="chat-header">
+        <h2>Chat</h2>
+      </div>
+      <div class="chat-toggle" id="chat-toggle" title="Toggle chat">◀</div>
+
+      <div class="chat-messages" id="chat-messages"></div>
+
+      <div class="chat-input-area">
+        <div class="chat-input-row">
+          <textarea id="chat-input" placeholder="Ask about concepts..." rows="1"></textarea>
+          <button id="chat-send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Graph Area -->
+    <div id="graph-area">
+      <div class="room-bar">
+        <div class="room-label" id="room-label">Room</div>
+        <div class="user-count" id="user-count">0 users</div>
+        <div class="presence-dots" id="presence-dots"></div>
+      </div>
+
+      <div class="graph-toolbar">
+        <button id="btn-fit-view" title="Fit view">⊞ Fit view</button>
+        <button id="btn-auto-layout" title="Auto layout">⊟ Auto layout</button>
+      </div>
+
+      <svg id="graph-svg"></svg>
+
+      <div class="connection-mode-banner" id="connection-banner">
+        <span>Click a second node to connect</span>
+        <span class="cancel-connect" id="cancel-connect">Cancel</span>
+      </div>
+
+      <div class="merge-mode-banner" id="merge-banner">
+        <span>Click a second node to merge into</span>
+        <span class="cancel-merge" id="cancel-merge">Cancel</span>
+      </div>
+    </div>
+
+    <!-- Activity Panel -->
+    <div id="activity-panel" class="collapsed">
+      <div class="activity-toggle" id="activity-toggle" title="Toggle activity log">☰</div>
+      <div class="activity-header">
+        <h2>Activity</h2>
+      </div>
+      <div class="activity-list" id="activity-list"></div>
+    </div>
+
+  </div>
+
+  <!-- Context Menu -->
+  <div class="context-menu" id="context-menu">
+    <div class="context-menu-item" data-action="expand">
+      <span class="cm-icon">↗</span> Expand (show related)
+    </div>
+    <div class="context-menu-item" data-action="elaborate">
+      <span class="cm-icon">✎</span> Elaborate
+    </div>
+    <div class="context-menu-item" data-action="connect">
+      <span class="cm-icon">⤫</span> Connect to...
+    </div>
+    <div class="context-menu-item" data-action="merge">
+      <span class="cm-icon">⊕</span> Merge with...
+    </div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="upvote">
+      <span class="cm-icon">△</span> Upvote
+    </div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item danger" data-action="prune">
+      <span class="cm-icon">✕</span> Prune
+    </div>
+  </div>
+
+  <!-- Similar Concepts Modal -->
+  <div class="modal-overlay" id="similar-modal">
+    <div class="modal-card">
+      <h3>Similar concepts found</h3>
+      <p id="similar-new-concept"></p>
+      <div id="similar-list"></div>
+      <div class="modal-actions">
+        <button id="similar-add-anyway">Add anyway</button>
+        <button id="similar-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/graph.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

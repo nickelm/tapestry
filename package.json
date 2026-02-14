@@ -1,0 +1,17 @@
+{
+  "name": "tapestry",
+  "version": "0.1.0",
+  "description": "Collaborative knowledge curation through interactive concept graphs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --env-file=.env server/index.js",
+    "dev": "node --env-file=.env server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4",
+    "sql.js": "^1.10.3",
+    "@anthropic-ai/sdk": "^0.74.0",
+    "uuid": "^9.0.0"
+  }
+}

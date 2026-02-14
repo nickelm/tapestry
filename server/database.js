@@ -1,0 +1,82 @@
+const initSqlJs = require('sql.js');
+const fs = require('fs');
+const path = require('path');
+
+let db = null;
+const DB_PATH = path.join(__dirname, '..', 'tapestry.db');
+
+async function initDatabase() {
+  const SQL = await initSqlJs();
+
+  let data = null;
+  if (fs.existsSync(DB_PATH)) {
+    data = fs.readFileSync(DB_PATH);
+  }
+
+  db = data ? new SQL.Database(data) : new SQL.Database();
+
+  const tables = [
+    `CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, room_id TEXT NOT NULL,
+      connected_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS nodes (
+      id TEXT PRIMARY KEY, room_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT DEFAULT '',
+      x REAL DEFAULT 0, y REAL DEFAULT 0, pinned INTEGER DEFAULT 0, upvotes INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT NOT NULL, merged_count INTEGER DEFAULT 0
+    )`,
+    `CREATE TABLE IF NOT EXISTS node_contributors (
+      node_id TEXT NOT NULL, user_id TEXT NOT NULL, contributed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (node_id, user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS node_upvotes (
+      node_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (node_id, user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS edges (
+      id TEXT PRIMARY KEY, room_id TEXT NOT NULL, source_id TEXT NOT NULL, target_id TEXT NOT NULL,
+      label TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS merged_nodes (
+      parent_id TEXT NOT NULL, original_title TEXT NOT NULL, original_description TEXT DEFAULT '',
+      merged_by TEXT NOT NULL, merged_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS activity_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, user_id TEXT, user_name TEXT,
+      action TEXT NOT NULL, target_type TEXT, target_id TEXT, details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`
+  ];
+
+  tables.forEach(sql => db.run(sql));
+  setInterval(saveDb, 30000);
+  return db;
+}
+
+function saveDb() {
+  if (!db) return;
+  const data = db.export();
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
+
+function queryAll(sql, params = []) {
+  const stmt = db.prepare(sql);
+  if (params.length) stmt.bind(params);
+  const results = [];
+  while (stmt.step()) results.push(stmt.getAsObject());
+  stmt.free();
+  return results;
+}
+
+function queryOne(sql, params = []) {
+  const results = queryAll(sql, params);
+  return results.length > 0 ? results[0] : null;
+}
+
+function run(sql, params = []) {
+  db.run(sql, params);
+}
+
+module.exports = { initDatabase, saveDb, queryAll, queryOne, run };
