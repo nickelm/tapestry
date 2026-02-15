@@ -163,6 +163,47 @@ body:has(.admin-control-strip:not(.hidden)) #app-screen {
   50% { background: #fef3c7; }
 }
 
+.timer-control-btn {
+  font-size: 11px;
+  padding: 2px 5px;
+  min-width: auto;
+}
+
+/* Inline editable fields in admin strip */
+.timer-duration-input,
+.esm-cadence-input {
+  width: 42px;
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  text-align: center;
+  background: var(--surface);
+  color: var(--text);
+  -moz-appearance: textfield;
+}
+
+.timer-duration-input::-webkit-outer-spin-button,
+.timer-duration-input::-webkit-inner-spin-button,
+.esm-cadence-input::-webkit-outer-spin-button,
+.esm-cadence-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.timer-duration-input:focus,
+.esm-cadence-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.inline-field-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
 .toggle-btn {
   position: relative;
   padding-left: 24px;
@@ -1876,4 +1917,182 @@ body:has(.admin-control-strip:not(.hidden)) #app-screen {
   font-weight: 600;
   color: var(--text);
   padding: 32px 0;
+}
+
+/* ESM Diary Modal */
+.esm-overlay {
+  background: rgba(0,0,0,0.15);
+}
+.esm-modal {
+  width: 340px;
+  position: relative;
+}
+.esm-item {
+  margin-bottom: 14px;
+}
+.esm-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.esm-likert {
+  display: flex;
+  gap: 4px;
+}
+.esm-likert button {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.esm-likert button:hover {
+  background: var(--hover);
+}
+.esm-likert button.selected {
+  background: var(--text);
+  color: white;
+  border-color: var(--text);
+}
+.esm-likert-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.esm-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.esm-activity label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Post-Test Survey Modal */
+.posttest-modal-card {
+  width: 560px;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+}
+.posttest-skip {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  cursor: pointer;
+}
+.posttest-skip:hover {
+  color: var(--text);
+}
+.posttest-section {
+  margin-bottom: 20px;
+}
+.posttest-section h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.posttest-item {
+  margin-bottom: 14px;
+}
+.posttest-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.posttest-likert {
+  display: flex;
+  gap: 4px;
+}
+.posttest-likert button {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.posttest-likert button:hover {
+  background: var(--hover);
+}
+.posttest-likert button.selected {
+  background: var(--text);
+  color: white;
+  border-color: var(--text);
+}
+.posttest-likert-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.posttest-textarea {
+  width: 100%;
+  min-height: 50px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+/* --- TOAST NOTIFICATIONS --- */
+.toast-container {
+  position: fixed;
+  top: 50px;
+  right: 16px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+  animation: toast-in 0.25s ease-out, toast-out 0.3s ease-in forwards;
+  animation-delay: 0s, 3s;
+  max-width: 320px;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }

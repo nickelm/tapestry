@@ -4,7 +4,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const session = require('express-session');
-const { initDatabase, saveDb, queryAll, queryOne, run, logInteraction, saveFeedback } = require('./database');
+const { initDatabase, saveDb, queryAll, queryOne, run, logInteraction, saveFeedback, saveDiaryEntry, savePosttest } = require('./database');
 const { LLMService } = require('./llm');
 
 const app = express();
@@ -172,6 +172,42 @@ app.get('/api/rooms/:roomId/export/feedback', requireAdmin, (req, res) => {
   });
 });
 
+app.get('/api/rooms/:roomId/export/diary', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const entries = queryAll(
+    'SELECT * FROM diary_entries WHERE roomId = ? ORDER BY triggeredAt ASC', [rid]
+  );
+
+  res.json({
+    roomId: rid,
+    roomName: room.name,
+    exportedAt: new Date().toISOString(),
+    count: entries.length,
+    diary: entries
+  });
+});
+
+app.get('/api/rooms/:roomId/export/posttest', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const rows = queryAll(
+    'SELECT * FROM posttest WHERE roomId = ? ORDER BY completedAt ASC', [rid]
+  );
+
+  res.json({
+    roomId: rid,
+    roomName: room.name,
+    exportedAt: new Date().toISOString(),
+    count: rows.length,
+    posttest: rows
+  });
+});
+
 // --- ROOM LIFECYCLE ---
 
 app.post('/api/rooms/:roomId/state', requireAdmin, (req, res) => {
@@ -215,6 +251,7 @@ app.delete('/api/rooms/:roomId', requireAdmin, (req, res) => {
   run('DELETE FROM activity_log WHERE room_id = ?', [rid]);
   run('DELETE FROM interaction_log WHERE roomId = ?', [rid]);
   run('DELETE FROM feedback WHERE roomId = ?', [rid]);
+  run('DELETE FROM posttest WHERE roomId = ?', [rid]);
   run('DELETE FROM rooms WHERE id = ?', [rid]);
   saveDb();
 
@@ -231,6 +268,18 @@ app.post('/api/rooms/:roomId/eval-mode', requireAdmin, (req, res) => {
 
   io.to(rid).emit('room:eval-mode-changed', { enabled: !!enabled });
   res.json({ evalMode: !!enabled });
+});
+
+app.post('/api/rooms/:roomId/esm-cadence', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const { minutes } = req.body;
+  const cadence = Math.max(1, Math.min(30, parseInt(minutes, 10) || 3));
+
+  run('UPDATE rooms SET esmCadenceMinutes = ? WHERE id = ?', [cadence, rid]);
+  saveDb();
+
+  io.to(rid).emit('room:esm-cadence-changed', { minutes: cadence });
+  res.json({ esmCadenceMinutes: cadence });
 });
 
 app.post('/api/rooms/:roomId/timer', requireAdmin, (req, res) => {
@@ -750,6 +799,33 @@ io.on('connection', (socket) => {
     logInteraction(currentRoom, currentUser.id, currentUser.name, 'feedback:submit', { category: data.category, context: data.context });
     saveDb();
     socket.emit('feedback:received');
+  });
+
+  socket.on('diary:submit', (data) => {
+    if (!currentUser || !currentRoom) return;
+    saveDiaryEntry(
+      currentRoom, currentUser.id, currentUser.name,
+      data.entryNumber, data.engagement, data.awareness,
+      data.relevance, data.activity, data.triggeredAt,
+      data.completedAt, data.status
+    );
+    logInteraction(currentRoom, currentUser.id, currentUser.name,
+      'esm:' + data.status, { entryNumber: data.entryNumber });
+    saveDb();
+  });
+
+  socket.on('posttest:submit', (data) => {
+    if (!currentUser || !currentRoom) return;
+    savePosttest(currentRoom, currentUser.id, currentUser.name, data, false);
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'posttest:submit', {});
+    saveDb();
+  });
+
+  socket.on('posttest:dismiss', () => {
+    if (!currentUser || !currentRoom) return;
+    savePosttest(currentRoom, currentUser.id, currentUser.name, {}, true);
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'posttest:dismiss', {});
+    saveDb();
   });
 
   socket.on('hover-node', ({ nodeId }) => {

@@ -18,6 +18,22 @@ let graphTitleMap = new Map(); // lowercase title -> nodeId (F10: shared graph a
 let lastInteractionEventType = null;
 let isAdmin = false;
 
+// ========== TOAST NOTIFICATIONS ==========
+function showToast(message, durationMs = 3500) {
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), durationMs);
+}
+
 // ========== ADMIN AUTH ==========
 
 (async function initAdminAuth() {
@@ -269,6 +285,16 @@ socket.on('joined', async ({ user, room }) => {
     roomTimerState.durationMinutes = room.durationMinutes;
     roomTimerState.remainingSeconds = room.durationMinutes * 60;
     updateRoomTimerDisplay();
+  }
+
+  // Initialize ESM if eval mode is on
+  resetEsmState();
+  if (room.esmCadenceMinutes) {
+    esmState.cadenceMinutes = room.esmCadenceMinutes;
+  }
+  if (room.evalMode) {
+    esmState.enabled = true;
+    scheduleNextEsm();
   }
 });
 
@@ -1914,6 +1940,10 @@ socket.on('left-room', () => {
   const roomTimer = document.getElementById('room-timer');
   if (roomTimer) roomTimer.style.display = 'none';
 
+  // Reset ESM state
+  if (esmState.showing) esmModal.classList.remove('visible');
+  resetEsmState();
+
   // Switch screens
   document.getElementById('app-screen').classList.remove('active');
   document.getElementById('login-screen').style.display = 'flex';
@@ -1994,7 +2024,12 @@ function hideFeedbackModal() {
   if (defaultRadio) defaultRadio.checked = true;
 }
 
-document.getElementById('feedback-btn').addEventListener('click', showFeedbackModal);
+document.getElementById('feedback-btn').addEventListener('click', () => {
+  if (typeof esmState !== 'undefined' && esmState.showing) {
+    dismissEsm('dismissed_for_feedback');
+  }
+  showFeedbackModal();
+});
 document.getElementById('feedback-close').addEventListener('click', hideFeedbackModal);
 
 feedbackModal.addEventListener('click', (e) => {
@@ -2034,6 +2069,135 @@ document.getElementById('feedback-submit').addEventListener('click', () => {
     // Re-attach close button listener after DOM replacement
     document.getElementById('feedback-close').addEventListener('click', hideFeedbackModal);
   }, 1500);
+});
+
+// ========== ESM (EXPERIENCE SAMPLING) ==========
+
+const esmModal = document.getElementById('esm-modal');
+
+let esmState = {
+  enabled: false,
+  entryCount: 0,
+  maxEntries: 3,
+  cadenceMinutes: 3,
+  timerId: null,
+  autoDismissId: null,
+  showing: false,
+  triggeredAt: null,
+  delayTimerId: null
+};
+
+function resetEsmState() {
+  esmState.enabled = false;
+  esmState.entryCount = 0;
+  esmState.showing = false;
+  clearTimeout(esmState.timerId);
+  clearTimeout(esmState.delayTimerId);
+  clearTimeout(esmState.autoDismissId);
+  esmState.timerId = null;
+  esmState.delayTimerId = null;
+  esmState.autoDismissId = null;
+}
+
+function scheduleNextEsm() {
+  clearTimeout(esmState.timerId);
+  clearTimeout(esmState.delayTimerId);
+  if (!esmState.enabled || esmState.entryCount >= esmState.maxEntries) return;
+  esmState.timerId = setTimeout(() => attemptShowEsm(), esmState.cadenceMinutes * 60 * 1000);
+}
+
+function attemptShowEsm() {
+  // If feedback modal is open, suppress entirely
+  if (feedbackModal.classList.contains('visible')) {
+    submitEsmEntry('suppressed_feedback_open', null);
+    return; // do not queue
+  }
+  // If chat input focused with text, delay 20 seconds
+  const chatInput = document.getElementById('chat-input');
+  if (document.activeElement === chatInput && chatInput.value.trim().length > 0) {
+    esmState.delayTimerId = setTimeout(() => showEsmPopup(), 20 * 1000);
+    return;
+  }
+  showEsmPopup();
+}
+
+function showEsmPopup() {
+  if (isAdmin) {
+    showToast('ESM check-in sent to users (' + (esmState.entryCount + 1) + ' of ' + esmState.maxEntries + ')');
+    esmState.entryCount++;
+    scheduleNextEsm();
+    return;
+  }
+  esmState.showing = true;
+  esmState.triggeredAt = new Date().toISOString();
+  const n = esmState.entryCount + 1;
+  document.getElementById('esm-header').textContent = `Quick check-in (${n} of 3)`;
+  // Reset selections
+  document.querySelectorAll('.esm-likert button').forEach(b => b.classList.remove('selected'));
+  document.querySelectorAll('input[name="esm-activity"]').forEach(r => r.checked = false);
+  esmModal.classList.add('visible');
+  // Auto-dismiss after 45 seconds
+  esmState.autoDismissId = setTimeout(() => dismissEsm('timeout'), 45 * 1000);
+}
+
+function dismissEsm(status) {
+  if (!esmState.showing) return;
+  clearTimeout(esmState.autoDismissId);
+  esmModal.classList.remove('visible');
+  esmState.showing = false;
+  if (status !== 'completed') {
+    submitEsmEntry(status, null);
+  }
+  scheduleNextEsm();
+}
+
+function submitEsmEntry(status, data) {
+  esmState.entryCount++;
+  socket.emit('diary:submit', {
+    entryNumber: esmState.entryCount,
+    engagement: data?.engagement ?? null,
+    awareness: data?.awareness ?? null,
+    relevance: data?.relevance ?? null,
+    activity: data?.activity ?? null,
+    triggeredAt: esmState.triggeredAt || new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    status: status
+  });
+  lastInteractionEventType = 'esm:' + status;
+}
+
+// Likert button selection
+document.querySelectorAll('.esm-likert button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+  });
+});
+
+// Submit
+document.getElementById('esm-submit').addEventListener('click', () => {
+  clearTimeout(esmState.autoDismissId);
+  const engagement = document.querySelector('.esm-likert[data-field="engagement"] button.selected')?.dataset.value;
+  const awareness = document.querySelector('.esm-likert[data-field="awareness"] button.selected')?.dataset.value;
+  const relevance = document.querySelector('.esm-likert[data-field="relevance"] button.selected')?.dataset.value;
+  const activityRadio = document.querySelector('input[name="esm-activity"]:checked');
+  submitEsmEntry('completed', {
+    engagement: engagement ? parseInt(engagement) : null,
+    awareness: awareness ? parseInt(awareness) : null,
+    relevance: relevance ? parseInt(relevance) : null,
+    activity: activityRadio ? activityRadio.value : null
+  });
+  esmModal.classList.remove('visible');
+  esmState.showing = false;
+  scheduleNextEsm();
+});
+
+// Close button
+document.getElementById('esm-close').addEventListener('click', () => dismissEsm('dismissed'));
+
+// Backdrop click to dismiss
+esmModal.addEventListener('click', (e) => {
+  if (e.target === esmModal) dismissEsm('dismissed');
 });
 
 // ========== ADMIN CONTROLS ==========
@@ -2127,6 +2291,17 @@ function initAdminControls(room) {
         }
       }
 
+      // Auto-enable ESM when switching to in-progress
+      if (data.state === 'in-progress' && esmToggleBtn.dataset.enabled !== 'true') {
+        fetch(`/api/rooms/${currentRoom.id}/eval-mode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true })
+        });
+        esmToggleBtn.dataset.enabled = 'true';
+        esmToggleText.textContent = 'ON';
+      }
+
       // Auto-reset timer when switching to normal
       if (data.state === 'normal') {
         resetTimer();
@@ -2143,13 +2318,29 @@ function initAdminControls(room) {
     }
   });
 
-  // Timer: click to set duration
-  timerDisplay.addEventListener('click', () => {
-    const currentMins = roomTimerState.durationMinutes || '';
-    const input = prompt('Set timer duration (minutes):', currentMins);
-    if (input === null) return; // cancelled
-    const mins = parseInt(input, 10);
-    if (!mins || mins < 1 || mins > 120) return;
+  // Timer: inline duration input
+  const timerDurationInput = document.getElementById('timer-duration-input');
+  if (roomTimerState.durationMinutes) {
+    timerDurationInput.value = roomTimerState.durationMinutes;
+  }
+
+  timerDurationInput.addEventListener('change', () => {
+    const raw = timerDurationInput.value.trim();
+    const mins = parseInt(raw, 10);
+    // Allow 0 or empty to clear the timer
+    if (raw === '' || mins === 0) {
+      roomTimerState.durationMinutes = null;
+      roomTimerState.remainingSeconds = null;
+      pauseTimer();
+      timerDurationInput.value = '';
+      updateTimerDisplay();
+      updateRoomTimerDisplay();
+      return;
+    }
+    if (isNaN(mins) || mins < 1 || mins > 120) {
+      timerDurationInput.value = roomTimerState.durationMinutes || '';
+      return;
+    }
     roomTimerState.durationMinutes = mins;
     roomTimerState.remainingSeconds = mins * 60;
     roomTimerState.running = false;
@@ -2161,32 +2352,44 @@ function initAdminControls(room) {
     updateRoomTimerDisplay();
   });
 
-  // Timer: right-click to start/pause
-  timerDisplay.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
+  // Timer: play/pause/reset buttons
+  const timerPlayBtn = document.getElementById('timer-play-btn');
+  const timerPauseBtn = document.getElementById('timer-pause-btn');
+  const timerResetBtn = document.getElementById('timer-reset-btn');
+
+  timerPlayBtn.addEventListener('click', () => {
     if (!roomTimerState.durationMinutes) return;
-    if (roomTimerState.running) {
-      pauseTimer();
-      fetch(`/api/rooms/${currentRoom.id}/timer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'pause' })
-      });
-    } else {
-      startTimer();
-      // Auto-show timer when started
-      if (!timerVisible) {
-        timerVisible = true;
-        timerVisibilityBtn.classList.add('active');
-        const roomTimer = document.getElementById('room-timer');
-        if (roomTimer) roomTimer.style.display = 'flex';
-      }
-      fetch(`/api/rooms/${currentRoom.id}/timer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'start' })
-      });
+    startTimer();
+    // Auto-show timer when started
+    if (!timerVisible) {
+      timerVisible = true;
+      timerVisibilityBtn.classList.add('active');
+      const roomTimer = document.getElementById('room-timer');
+      if (roomTimer) roomTimer.style.display = 'flex';
     }
+    fetch(`/api/rooms/${currentRoom.id}/timer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'start' })
+    });
+  });
+
+  timerPauseBtn.addEventListener('click', () => {
+    pauseTimer();
+    fetch(`/api/rooms/${currentRoom.id}/timer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'pause' })
+    });
+  });
+
+  timerResetBtn.addEventListener('click', () => {
+    resetTimer();
+    fetch(`/api/rooms/${currentRoom.id}/timer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reset' })
+    });
   });
 
   // ESM toggle
@@ -2202,6 +2405,30 @@ function initAdminControls(room) {
       esmToggleText.textContent = newState ? 'ON' : 'OFF';
     } catch (e) {
       console.error('Failed to toggle eval mode:', e);
+    }
+  });
+
+  // ESM cadence input
+  const esmCadenceInput = document.getElementById('esm-cadence-input');
+  if (room.esmCadenceMinutes) {
+    esmCadenceInput.value = room.esmCadenceMinutes;
+    esmState.cadenceMinutes = room.esmCadenceMinutes;
+  }
+
+  esmCadenceInput.addEventListener('change', async () => {
+    const mins = parseInt(esmCadenceInput.value, 10);
+    if (!mins || mins < 1 || mins > 30) {
+      esmCadenceInput.value = esmState.cadenceMinutes;
+      return;
+    }
+    try {
+      await fetch(`/api/rooms/${currentRoom.id}/esm-cadence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minutes: mins })
+      });
+    } catch (e) {
+      console.error('Failed to update ESM cadence:', e);
     }
   });
 
@@ -2269,6 +2496,7 @@ function updateRoomTimerDisplay() {
 
 function startTimer() {
   if (roomTimerState.running) return;
+  if (!roomTimerState.durationMinutes || roomTimerState.remainingSeconds <= 0) return;
   roomTimerState.running = true;
 
   roomTimerState.interval = setInterval(() => {
@@ -2329,6 +2557,26 @@ socket.on('room:eval-mode-changed', ({ enabled }) => {
     btn.dataset.enabled = enabled;
     text.textContent = enabled ? 'ON' : 'OFF';
   }
+  esmState.enabled = enabled;
+  if (enabled) {
+    scheduleNextEsm();
+  } else {
+    clearTimeout(esmState.timerId);
+    clearTimeout(esmState.delayTimerId);
+    if (esmState.showing) dismissEsm('dismissed');
+  }
+});
+
+// Socket: ESM cadence changed
+socket.on('room:esm-cadence-changed', ({ minutes }) => {
+  esmState.cadenceMinutes = minutes;
+  const cadenceInput = document.getElementById('esm-cadence-input');
+  if (cadenceInput) cadenceInput.value = minutes;
+  // Reschedule with new cadence if ESM is active
+  if (esmState.enabled) {
+    clearTimeout(esmState.timerId);
+    scheduleNextEsm();
+  }
 });
 
 // Socket: timer control (sync across clients)
@@ -2353,10 +2601,69 @@ socket.on('room:timer-control', ({ action }) => {
   }
 });
 
-// Socket: post-test trigger (placeholder — full modal in Step 5)
+// ========== POST-TEST SURVEY ==========
+
+const posttestModal = document.getElementById('posttest-modal');
+
+function showPosttestModal() {
+  // Reset all selections
+  posttestModal.querySelectorAll('.posttest-likert button').forEach(b => b.classList.remove('selected'));
+  posttestModal.querySelectorAll('.posttest-textarea').forEach(t => t.value = '');
+  posttestModal.classList.add('visible');
+}
+
+function hidePosttestModal() {
+  posttestModal.classList.remove('visible');
+}
+
+// Likert button selection (event delegation)
+posttestModal.addEventListener('click', (e) => {
+  const btn = e.target.closest('.posttest-likert button');
+  if (!btn) return;
+  const row = btn.closest('.posttest-likert');
+  row.querySelectorAll('button').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+});
+
+// Submit
+document.getElementById('posttest-submit').addEventListener('click', () => {
+  const data = {};
+  let allLikertAnswered = true;
+  posttestModal.querySelectorAll('.posttest-likert').forEach(row => {
+    const field = row.dataset.field;
+    const sel = row.querySelector('button.selected');
+    if (sel) {
+      data[field] = parseInt(sel.dataset.value);
+    } else {
+      allLikertAnswered = false;
+    }
+  });
+  if (!allLikertAnswered) {
+    alert('Please answer all rating items before submitting.');
+    return;
+  }
+  posttestModal.querySelectorAll('.posttest-textarea').forEach(ta => {
+    data[ta.dataset.field] = ta.value.trim();
+  });
+  socket.emit('posttest:submit', data);
+  hidePosttestModal();
+});
+
+// Skip
+document.getElementById('posttest-skip').addEventListener('click', (e) => {
+  e.preventDefault();
+  socket.emit('posttest:dismiss');
+  hidePosttestModal();
+});
+
+// Socket: post-test trigger
 socket.on('posttest:trigger', () => {
   console.log('Post-test triggered');
-  alert('Post-test survey triggered. (Full modal to be implemented in Step 5.)');
+  if (isAdmin) {
+    showToast('Post-test survey sent to all users');
+    return;
+  }
+  showPosttestModal();
 });
 
 // ========== INIT ==========
@@ -2372,5 +2679,10 @@ document.addEventListener('keydown', (e) => {
     cancelMergeMode();
     if (connectionsModal.classList.contains('visible')) hideConnectionsModal();
     if (feedbackModal.classList.contains('visible')) hideFeedbackModal();
+    if (esmState.showing) dismissEsm('dismissed');
+    if (posttestModal.classList.contains('visible')) {
+      socket.emit('posttest:dismiss');
+      hidePosttestModal();
+    }
   }
 });

@@ -51,9 +51,14 @@
     <div class="control-separator"></div>
     <div class="control-item">
       <button id="timer-visibility-btn" class="control-icon-btn" title="Toggle timer visibility for all users">&#9201;</button>
-      <button id="timer-display" class="control-btn timer-btn" title="Click: set duration. Right-click: start/pause.">
+      <input type="number" id="timer-duration-input" class="timer-duration-input" min="0" max="120" placeholder="min" title="Timer duration in minutes (0 to clear)">
+      <span class="inline-field-label">min</span>
+      <span id="timer-display" class="timer-btn">
         <span id="timer-text">--:--</span>
-      </button>
+      </span>
+      <button id="timer-play-btn" class="control-icon-btn timer-control-btn" title="Start timer">&#9654;</button>
+      <button id="timer-pause-btn" class="control-icon-btn timer-control-btn" title="Pause timer">&#9646;&#9646;</button>
+      <button id="timer-reset-btn" class="control-icon-btn timer-control-btn" title="Reset timer">&#8634;</button>
     </div>
     <div class="control-separator"></div>
     <div class="control-item">
@@ -62,6 +67,9 @@
         <span class="toggle-indicator"></span>
         <span id="esm-toggle-text">OFF</span>
       </button>
+      <span class="inline-field-label" style="margin-left: 6px;">every</span>
+      <input type="number" id="esm-cadence-input" class="esm-cadence-input" min="1" max="30" value="3" title="ESM interval in minutes">
+      <span class="inline-field-label">min</span>
     </div>
     <div class="control-separator"></div>
     <button id="trigger-posttest-btn" class="control-btn action-btn">Post-Test</button>
@@ -252,6 +260,176 @@
       <div class="modal-actions">
         <button id="connections-skip">Skip</button>
         <button id="connections-add" class="primary" disabled>Add selected</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ESM Diary Modal -->
+  <div class="modal-overlay esm-overlay" id="esm-modal">
+    <div class="modal-card esm-modal">
+      <h3 id="esm-header">Quick check-in (1 of 3)</h3>
+      <button class="feedback-close" id="esm-close">&times;</button>
+
+      <div class="esm-item">
+        <label class="esm-label">I feel engaged with the task right now.</label>
+        <div class="esm-likert" data-field="engagement">
+          <button data-value="1">1</button>
+          <button data-value="2">2</button>
+          <button data-value="3">3</button>
+          <button data-value="4">4</button>
+          <button data-value="5">5</button>
+        </div>
+        <div class="esm-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+      </div>
+
+      <div class="esm-item">
+        <label class="esm-label">I have a clear picture of what the group has built.</label>
+        <div class="esm-likert" data-field="awareness">
+          <button data-value="1">1</button>
+          <button data-value="2">2</button>
+          <button data-value="3">3</button>
+          <button data-value="4">4</button>
+          <button data-value="5">5</button>
+        </div>
+        <div class="esm-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+      </div>
+
+      <div class="esm-item">
+        <label class="esm-label">The concepts I'm finding feel relevant.</label>
+        <div class="esm-likert" data-field="relevance">
+          <button data-value="1">1</button>
+          <button data-value="2">2</button>
+          <button data-value="3">3</button>
+          <button data-value="4">4</button>
+          <button data-value="5">5</button>
+        </div>
+        <div class="esm-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+      </div>
+
+      <div class="esm-item">
+        <label class="esm-label">What are you doing right now?</label>
+        <div class="esm-activity" data-field="activity">
+          <label><input type="radio" name="esm-activity" value="chatting"> Chatting with the LLM</label>
+          <label><input type="radio" name="esm-activity" value="reading-graph"> Reading the graph</label>
+          <label><input type="radio" name="esm-activity" value="organizing"> Organizing the graph</label>
+          <label><input type="radio" name="esm-activity" value="reading-others"> Reading others' contributions</label>
+          <label><input type="radio" name="esm-activity" value="thinking"> Thinking</label>
+          <label><input type="radio" name="esm-activity" value="other"> Other</label>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="esm-submit" class="primary">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post-Test Survey Modal -->
+  <div class="modal-overlay" id="posttest-modal">
+    <div class="modal-card posttest-modal-card">
+      <a href="#" class="posttest-skip" id="posttest-skip">Skip</a>
+      <h3>Post-Session Survey</h3>
+
+      <div class="posttest-section">
+        <h4>Section A: Learning &amp; Exploration</h4>
+        <div class="posttest-item">
+          <label class="posttest-label">A1. Chatting with the LLM helped me understand the topic.</label>
+          <div class="posttest-likert" data-field="a1">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">A2. I explored concepts in depth using follow-up prompts.</label>
+          <div class="posttest-likert" data-field="a2">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">A3. The concepts extracted by the LLM were relevant and useful.</label>
+          <div class="posttest-likert" data-field="a3">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+      </div>
+
+      <div class="posttest-section">
+        <h4>Section B: Collaboration</h4>
+        <div class="posttest-item">
+          <label class="posttest-label">B1. I was aware of what others were contributing to the graph.</label>
+          <div class="posttest-likert" data-field="b1">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">B2. The shared graph helped me see connections I wouldn't have found alone.</label>
+          <div class="posttest-likert" data-field="b2">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">B3. The group produced a better result than I could have alone.</label>
+          <div class="posttest-likert" data-field="b3">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+      </div>
+
+      <div class="posttest-section">
+        <h4>Section C: Usability</h4>
+        <div class="posttest-item">
+          <label class="posttest-label">C1. The tool was easy to learn.</label>
+          <div class="posttest-likert" data-field="c1">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">C2. The distinction between personal workspace and shared graph was clear.</label>
+          <div class="posttest-likert" data-field="c2">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">C3. I understood how to harvest concepts to the shared graph.</label>
+          <div class="posttest-likert" data-field="c3">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">C4. The graph layout made it easy to see the structure of the topic.</label>
+          <div class="posttest-likert" data-field="c4">
+            <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="7">7</button>
+          </div>
+          <div class="posttest-likert-labels"><span>Strongly disagree</span><span>Strongly agree</span></div>
+        </div>
+      </div>
+
+      <div class="posttest-section">
+        <h4>Section D: Open-Ended</h4>
+        <div class="posttest-item">
+          <label class="posttest-label">D1. Most useful feature?</label>
+          <textarea class="posttest-textarea" data-field="d1" rows="2" placeholder="1–2 sentences"></textarea>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">D2. Most confusing or frustrating aspect?</label>
+          <textarea class="posttest-textarea" data-field="d2" rows="2" placeholder="1–2 sentences"></textarea>
+        </div>
+        <div class="posttest-item">
+          <label class="posttest-label">D3. One thing you'd change?</label>
+          <textarea class="posttest-textarea" data-field="d3" rows="2" placeholder="1–2 sentences"></textarea>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="posttest-submit" class="primary">Submit</button>
       </div>
     </div>
   </div>
