@@ -119,6 +119,23 @@
         <div class="presence-dots" id="presence-dots"></div>
       </div>
 
+      <!-- Room Details Panel -->
+      <div class="room-details-panel" id="room-details-panel">
+        <div class="room-details-field">
+          <label class="harvest-form-label">Room Name</label>
+          <input type="text" class="harvest-form-input" id="room-details-name" readonly>
+        </div>
+        <div class="room-details-field">
+          <label class="harvest-form-label">Summary</label>
+          <textarea class="harvest-form-textarea" id="room-details-summary" rows="3" maxlength="500" readonly
+            placeholder="No summary set"></textarea>
+        </div>
+        <div class="room-details-actions hidden" id="room-details-actions">
+          <button class="room-details-btn cancel" id="room-details-cancel">Cancel</button>
+          <button class="room-details-btn save" id="room-details-save">Save</button>
+        </div>
+      </div>
+
       <div class="graph-toolbar">
         <button id="btn-fit-view" title="Fit view">⊞ Fit view</button>
         <button id="btn-auto-layout" title="Auto layout">⊟ Auto layout</button>

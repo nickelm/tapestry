@@ -1304,6 +1304,86 @@ body:has(.admin-control-strip:not(.hidden)) #app-screen {
 
 .presence-dot:first-child { margin-left: 0; }
 
+/* Room Details Panel (popover below room label) */
+.room-details-panel {
+  display: none;
+  position: absolute;
+  top: 44px;
+  left: 12px;
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 14px;
+  z-index: 10;
+}
+
+.room-details-panel.visible {
+  display: block;
+}
+
+.room-details-field {
+  margin-bottom: 10px;
+}
+
+.room-details-field:last-of-type {
+  margin-bottom: 12px;
+}
+
+.room-details-panel .harvest-form-input[readonly],
+.room-details-panel .harvest-form-textarea[readonly] {
+  background: var(--bg);
+  cursor: default;
+  color: var(--text-secondary);
+}
+
+.room-details-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.room-details-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.room-details-btn.save {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.room-details-btn.save:hover {
+  opacity: 0.9;
+}
+
+.room-details-btn.cancel:hover {
+  background: var(--bg);
+}
+
+.room-bar .room-label {
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s;
+}
+
+.room-bar .room-label:hover {
+  border-color: var(--accent);
+}
+
+.room-bar .room-label.panel-open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
 /* --- GRAPH NODES --- */
 .node-group { cursor: grab; }
 .node-group:active { cursor: grabbing; }

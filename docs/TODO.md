@@ -7,15 +7,15 @@
 * Search to filter on the workspace
 * Persistent login(?)
 * Upvote should become downvote in context menu if you have used it
-* Need ways to delete, create, and rename rooms
-  - Can add a sentence of context
-  - Accessed through the board name panel
 
 # Completed
 
+* Need ways to delete, create, and rename rooms
+  - Can add a sentence of context
+  - Accessed through the board name panel
 * Need a way to suggest connections
   - Perhaps show a list (and strength) of the existing concepts on screen
 
 # Logging in
 
-  http://localhost:3001/?admin=mySecret123
+  http://localhost:3001/?admin=???

@@ -94,6 +94,9 @@ async function initDatabase() {
   if (!roomCols.some(c => c.name === 'esmCadenceMinutes')) {
     db.run("ALTER TABLE rooms ADD COLUMN esmCadenceMinutes INTEGER DEFAULT 3");
   }
+  if (!roomCols.some(c => c.name === 'summary')) {
+    db.run("ALTER TABLE rooms ADD COLUMN summary TEXT DEFAULT ''");
+  }
 
   // Migration: rename legacy state values
   db.run("UPDATE rooms SET state = 'normal' WHERE state = 'waiting'");

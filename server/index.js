@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const session = require('express-session');
 const { initDatabase, saveDb, queryAll, queryOne, run, logInteraction, saveFeedback, saveDiaryEntry, savePosttest } = require('./database');
 const { LLMService } = require('./llm');
+const archiver = require('archiver');
 
 const app = express();
 const server = http.createServer(app);
@@ -120,7 +121,10 @@ app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
   const { title, breadcrumb, excerpt } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
   try {
-    const description = await llm.describeConcept(title, breadcrumb || [], excerpt || '');
+    const room = queryOne('SELECT name, summary FROM rooms WHERE id = ?', [req.params.roomId]);
+    const description = await llm.describeConcept(title, breadcrumb || [], excerpt || '', {
+      roomName: room?.name, roomSummary: room?.summary || ''
+    });
     res.json({ description });
   } catch (e) {
     console.error('describe-concept error:', e.message);
@@ -264,6 +268,7 @@ app.post('/api/rooms/:roomId/eval-mode', requireAdmin, (req, res) => {
   const evalMode = enabled ? 1 : 0;
 
   run('UPDATE rooms SET evalMode = ? WHERE id = ?', [evalMode, rid]);
+  logInteraction(rid, 'admin', 'admin', 'eval:toggle', { enabled: !!enabled });
   saveDb();
 
   io.to(rid).emit('room:eval-mode-changed', { enabled: !!enabled });
@@ -282,6 +287,41 @@ app.post('/api/rooms/:roomId/esm-cadence', requireAdmin, (req, res) => {
   res.json({ esmCadenceMinutes: cadence });
 });
 
+app.put('/api/rooms/:roomId/details', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const { name, summary } = req.body;
+  const updates = [];
+  const params = [];
+
+  if (name !== undefined && name.trim()) {
+    updates.push('name = ?');
+    params.push(name.trim());
+  }
+  if (summary !== undefined) {
+    updates.push('summary = ?');
+    params.push(summary);
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+
+  params.push(rid);
+  run(`UPDATE rooms SET ${updates.join(', ')} WHERE id = ?`, params);
+  saveDb();
+
+  const updated = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  io.to(rid).emit('room:details-changed', {
+    name: updated.name,
+    summary: updated.summary || ''
+  });
+
+  res.json({ name: updated.name, summary: updated.summary || '' });
+});
+
 app.post('/api/rooms/:roomId/timer', requireAdmin, (req, res) => {
   const rid = req.params.roomId;
   const { action } = req.body;
@@ -289,21 +329,117 @@ app.post('/api/rooms/:roomId/timer', requireAdmin, (req, res) => {
   res.json({ success: true });
 });
 
+function toCsv(rows, columns) {
+  if (!columns) {
+    if (rows.length === 0) return '';
+    columns = Object.keys(rows[0]);
+  }
+  const escape = (val) => {
+    if (val === null || val === undefined) return '';
+    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+    if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  };
+  const header = columns.map(escape).join(',');
+  const body = rows.map(row => columns.map(col => escape(row[col])).join(',')).join('\n');
+  return header + '\n' + body;
+}
+
 app.get('/api/rooms/:roomId/export/all', requireAdmin, (req, res) => {
   const rid = req.params.roomId;
   const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
   if (!room) return res.status(404).json({ error: 'Room not found' });
 
-  // Placeholder — full ZIP bundle to be implemented in Step 6 of the spec
-  res.json({
+  // --- Query all data ---
+
+  // Interactions CSV
+  const interactions = queryAll(
+    'SELECT * FROM interaction_log WHERE roomId = ? ORDER BY timestamp ASC', [rid]
+  ).map(row => ({ ...row, payload: row.payload ? JSON.parse(row.payload) : null }));
+
+  // Diary CSV
+  const diary = queryAll(
+    'SELECT * FROM diary_entries WHERE roomId = ? ORDER BY triggeredAt ASC', [rid]
+  );
+
+  // Feedback CSV
+  const feedback = queryAll(
+    'SELECT * FROM feedback WHERE roomId = ? ORDER BY timestamp ASC', [rid]
+  ).map(row => ({ ...row, contextJson: row.contextJson ? JSON.parse(row.contextJson) : null }));
+
+  // Posttest CSV
+  const posttest = queryAll(
+    'SELECT * FROM posttest WHERE roomId = ? ORDER BY completedAt ASC', [rid]
+  );
+
+  // Graph JSON
+  const nodes = queryAll('SELECT * FROM nodes WHERE room_id = ?', [rid]);
+  const edges = queryAll('SELECT * FROM edges WHERE room_id = ?', [rid]);
+  const nodeIds = nodes.map(n => n.id);
+  let contributors = [];
+  let upvotes = [];
+  for (const nid of nodeIds) {
+    const c = queryAll('SELECT nc.node_id, nc.user_id, nc.contributed_at FROM node_contributors nc WHERE nc.node_id = ?', [nid]);
+    contributors.push(...c);
+    const u = queryAll('SELECT node_id, user_id FROM node_upvotes WHERE node_id = ?', [nid]);
+    upvotes.push(...u);
+  }
+  const graph = { nodes, edges, contributors, upvotes };
+
+  // Activity JSON
+  const activity = queryAll(
+    'SELECT * FROM activity_log WHERE room_id = ? ORDER BY created_at ASC', [rid]
+  );
+
+  // Metadata JSON
+  const users = queryAll('SELECT id, name FROM users WHERE room_id = ?', [rid]);
+  const evalToggles = queryAll(
+    "SELECT timestamp, payload FROM interaction_log WHERE roomId = ? AND eventType = 'eval:toggle' ORDER BY timestamp ASC", [rid]
+  ).map(row => ({
+    timestamp: row.timestamp,
+    enabled: row.payload ? JSON.parse(row.payload).enabled : null
+  }));
+
+  const metadata = {
     roomId: rid,
     roomName: room.name,
     state: room.state,
+    createdAt: room.created_at,
     durationMinutes: room.durationMinutes,
-    evalMode: room.evalMode === 1,
-    exportedAt: new Date().toISOString(),
-    note: 'Full ZIP export will be implemented in Step 6'
+    users: users.map(u => ({ sessionId: u.id, displayName: u.name })),
+    evalModeToggles: evalToggles,
+    exportedAt: new Date().toISOString()
+  };
+
+  // --- CSV column definitions for empty tables ---
+  const interactionCols = ['id', 'roomId', 'userId', 'displayName', 'eventType', 'payload', 'timestamp'];
+  const diaryCols = ['id', 'roomId', 'userId', 'displayName', 'entryNumber', 'engagement', 'awareness', 'relevance', 'activity', 'triggeredAt', 'completedAt', 'status'];
+  const feedbackCols = ['id', 'roomId', 'userId', 'displayName', 'category', 'text', 'contextJson', 'timestamp'];
+  const posttestCols = ['id', 'roomId', 'userId', 'displayName', 'a1', 'a2', 'a3', 'b1', 'b2', 'b3', 'c1', 'c2', 'c3', 'c4', 'd1', 'd2', 'd3', 'completedAt', 'dismissed'];
+
+  // --- Build ZIP ---
+  const safeName = room.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  res.set('Content-Type', 'application/zip');
+  res.set('Content-Disposition', `attachment; filename="room-${safeName}-export.zip"`);
+
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  archive.on('error', (err) => {
+    console.error('Archive error:', err);
+    if (!res.headersSent) res.status(500).json({ error: 'Export failed' });
   });
+  archive.pipe(res);
+
+  archive.append(toCsv(interactions, interactionCols), { name: 'interactions.csv' });
+  archive.append(toCsv(diary, diaryCols), { name: 'diary.csv' });
+  archive.append(toCsv(feedback, feedbackCols), { name: 'feedback.csv' });
+  archive.append(toCsv(posttest, posttestCols), { name: 'posttest.csv' });
+  archive.append(JSON.stringify(graph, null, 2), { name: 'graph.json' });
+  archive.append(JSON.stringify(activity, null, 2), { name: 'activity.json' });
+  archive.append(JSON.stringify(metadata, null, 2), { name: 'metadata.json' });
+
+  archive.finalize();
 });
 
 // --- SOCKET.IO ---
@@ -326,6 +462,13 @@ io.on('connection', (socket) => {
   let currentRoom = null;
   let activeAbortController = null;
   let joinedAt = null;
+
+  function getRoomContext() {
+    if (!currentRoom) return {};
+    const room = queryOne('SELECT name, summary FROM rooms WHERE id = ?', [currentRoom]);
+    if (!room) return {};
+    return { roomName: room.name, roomSummary: room.summary || '' };
+  }
 
   socket.on('join-room', ({ roomId, userName }) => {
     const room = queryOne('SELECT * FROM rooms WHERE id = ?', [roomId]);
@@ -381,7 +524,8 @@ io.on('connection', (socket) => {
 
     try {
       const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
-      const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal, roomName, breadcrumb });
+      const ctx = getRoomContext();
+      const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal, roomName: ctx.roomName, roomSummary: ctx.roomSummary, breadcrumb });
       if (!abortController.signal.aborted) {
         logInteraction(currentRoom, currentUser.id, currentUser.name, 'chat:response', {
           responseId: uuidv4(),
@@ -418,7 +562,7 @@ io.on('connection', (socket) => {
 
     let similarIds = [];
     if (existing.length > 0) {
-      try { similarIds = await llm.findSimilarConcepts({ title, description }, existing); } catch (e) {}
+      try { similarIds = await llm.findSimilarConcepts({ title, description }, existing, getRoomContext()); } catch (e) {}
     }
 
     if (similarIds.length > 0) {
@@ -475,7 +619,7 @@ io.on('connection', (socket) => {
     if (candidates.length === 0) return;
 
     try {
-      const suggestions = await llm.suggestConnections({ title, description }, candidates);
+      const suggestions = await llm.suggestConnections({ title, description }, candidates, getRoomContext());
       if (suggestions.length === 0) return;
 
       const enriched = suggestions.map(s => {
@@ -514,7 +658,7 @@ io.on('connection', (socket) => {
     let label = 'relates to';
     let directed = true;
     try {
-      const result = await llm.generateRelationshipLabel(source, target);
+      const result = await llm.generateRelationshipLabel(source, target, getRoomContext());
       label = result.label;
       directed = result.directed;
     } catch (e) {}
@@ -537,7 +681,7 @@ io.on('connection', (socket) => {
     const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
 
     try {
-      const expansions = await llm.expandConcept(node, existing);
+      const expansions = await llm.expandConcept(node, existing, getRoomContext());
       for (const exp of expansions) {
         const newId = uuidv4();
         const x = node.x + (Math.random() - 0.5) * 200;
@@ -620,7 +764,7 @@ io.on('connection', (socket) => {
     if (!node) return;
 
     try {
-      const elaboration = await llm.elaborateConcept(node);
+      const elaboration = await llm.elaborateConcept(node, getRoomContext());
       run('UPDATE nodes SET description = ? WHERE id = ?', [elaboration, nodeId]);
       io.to(currentRoom).emit('node-updated', { id: nodeId, description: elaboration });
       io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'elaborated', target_type: 'node', target_id: nodeId, details: node.title, created_at: new Date().toISOString() });
@@ -688,7 +832,7 @@ io.on('connection', (socket) => {
     if (!keepNode || !mergeNode) return;
 
     try {
-      const merged = await llm.suggestMerge(keepNode, mergeNode);
+      const merged = await llm.suggestMerge(keepNode, mergeNode, getRoomContext());
 
       run('INSERT INTO merged_nodes (parent_id, original_title, original_description, merged_by) VALUES (?, ?, ?, ?)',
         [keepId, mergeNode.title, mergeNode.description, currentUser.id]);
@@ -753,7 +897,7 @@ io.on('connection', (socket) => {
     const newTarget = queryOne('SELECT * FROM nodes WHERE id = ?', [edge.source_id]);
     if (newSource && newTarget) {
       try {
-        const result = await llm.generateRelationshipLabel(newSource, newTarget);
+        const result = await llm.generateRelationshipLabel(newSource, newTarget, getRoomContext());
         run('UPDATE edges SET label = ?, directed = ? WHERE id = ?', [result.label, result.directed ? 1 : 0, edgeId]);
         io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label: result.label, directed: result.directed });
         saveDb();
@@ -780,7 +924,7 @@ io.on('connection', (socket) => {
     const target = queryOne('SELECT * FROM nodes WHERE id = ?', [edge.target_id]);
     if (source && target) {
       try {
-        const result = await llm.generateRelationshipLabel(source, target);
+        const result = await llm.generateRelationshipLabel(source, target, getRoomContext());
         run('UPDATE edges SET label = ?, directed = ? WHERE id = ?', [result.label, result.directed ? 1 : 0, edgeId]);
         io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label: result.label, directed: result.directed });
         saveDb();

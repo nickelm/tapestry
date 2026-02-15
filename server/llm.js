@@ -8,12 +8,12 @@ class LLMService {
     this.taskModel = 'claude-haiku-4-5-20251001';
   }
 
-  async chatWithExtraction(messages, existingConcepts = [], { signal, roomName, breadcrumb } = {}) {
+  async chatWithExtraction(messages, existingConcepts = [], { signal, roomName, roomSummary, breadcrumb } = {}) {
     const existingList = existingConcepts.length > 0
       ? `\n\nExisting concepts in the shared knowledge graph (avoid duplicating these):\n${existingConcepts.map(c => `- ${c.title}: ${c.description}`).join('\n')}`
       : '';
 
-    const roomContext = roomName ? `\nThe topic of this session is "${roomName}".` : '';
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const breadcrumbContext = breadcrumb && breadcrumb.length > 0
       ? `\nThe student is exploring the following path: ${breadcrumb.join(' \u2192 ')}.`
       : '';
@@ -64,11 +64,12 @@ Do NOT include descriptions — titles only. Be specific rather than generic.${e
     return { text: cleanText, concepts };
   }
 
-  async generateRelationshipLabel(concept1, concept2) {
+  async generateRelationshipLabel(concept1, concept2, { roomName, roomSummary } = {}) {
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 100,
-      system: 'You generate concise relationship labels for knowledge graphs. Respond ONLY with valid JSON: {"label": "...", "directed": true/false}. The label should be a short phrase (2-5 words). Set directed to true if the relationship flows from the first concept to the second (e.g., "influenced", "enables", "is a type of", "depends on"). Set directed to false if the relationship is symmetric (e.g., "contrasts with", "were contemporaries", "is similar to"). No explanation.',
+      system: `You generate concise relationship labels for knowledge graphs.${roomContext} Respond ONLY with valid JSON: {"label": "...", "directed": true/false}. The label should be a short phrase (2-5 words). Set directed to true if the relationship flows from the first concept to the second (e.g., "influenced", "enables", "is a type of", "depends on"). Set directed to false if the relationship is symmetric (e.g., "contrasts with", "were contemporaries", "is similar to"). No explanation.`,
       messages: [{
         role: 'user',
         content: `How does "${concept1.title}" relate to "${concept2.title}"?\n\nContext:\n- ${concept1.title}: ${concept1.description}\n- ${concept2.title}: ${concept2.description}`
@@ -87,12 +88,13 @@ Do NOT include descriptions — titles only. Be specific rather than generic.${e
     }
   }
 
-  async expandConcept(concept, existingConcepts = []) {
+  async expandConcept(concept, existingConcepts = [], { roomName, roomSummary } = {}) {
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const existingList = existingConcepts.map(c => c.title).join(', ');
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 500,
-      system: `You help expand knowledge graphs by suggesting related concepts. Given a concept, suggest 2-4 closely related concepts that would be valuable neighbors in a knowledge graph. Each suggestion should include a title, description, relationship label, and whether the relationship is directed (flows from the original concept to the new one) or symmetric.
+      system: `You help expand knowledge graphs by suggesting related concepts.${roomContext} Given a concept, suggest 2-4 closely related concepts that would be valuable neighbors in a knowledge graph. Each suggestion should include a title, description, relationship label, and whether the relationship is directed (flows from the original concept to the new one) or symmetric.
 
 Existing concepts to avoid duplicating: ${existingList}
 
@@ -112,11 +114,12 @@ Respond ONLY with valid JSON array, no markdown fences:
     }
   }
 
-  async elaborateConcept(concept) {
+  async elaborateConcept(concept, { roomName, roomSummary } = {}) {
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 200,
-      system: 'You provide concise, enriched descriptions for knowledge graph nodes. Given a concept, provide a richer 2-3 sentence description. Respond with ONLY the description text, no formatting.',
+      system: `You provide concise, enriched descriptions for knowledge graph nodes.${roomContext} Given a concept, provide a richer 2-3 sentence description. Respond with ONLY the description text, no formatting.`,
       messages: [{
         role: 'user',
         content: `Elaborate on: "${concept.title}" - ${concept.description}`
@@ -125,11 +128,12 @@ Respond ONLY with valid JSON array, no markdown fences:
     return response.content[0].text.trim();
   }
 
-  async suggestMerge(concept1, concept2) {
+  async suggestMerge(concept1, concept2, { roomName, roomSummary } = {}) {
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 200,
-      system: 'You help merge similar concepts in knowledge graphs. Given two similar concepts, produce a merged version. Respond ONLY with valid JSON: {"title": "...", "description": "..."}',
+      system: `You help merge similar concepts in knowledge graphs.${roomContext} Given two similar concepts, produce a merged version. Respond ONLY with valid JSON: {"title": "...", "description": "..."}`,
       messages: [{
         role: 'user',
         content: `Merge these concepts:\n1. "${concept1.title}": ${concept1.description}\n2. "${concept2.title}": ${concept2.description}`
@@ -144,7 +148,7 @@ Respond ONLY with valid JSON array, no markdown fences:
     }
   }
 
-  async describeConcept(title, breadcrumb = [], excerpt = '') {
+  async describeConcept(title, breadcrumb = [], excerpt = '', { roomName, roomSummary } = {}) {
     let content;
     if (excerpt) {
       const context = breadcrumb.length > 0 ? breadcrumb.join(' \u2192 ') : 'a topic';
@@ -155,22 +159,23 @@ Respond ONLY with valid JSON array, no markdown fences:
         : 'Provide';
       content = `${prefix} a one-sentence description of the concept "${title}".`;
     }
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 100,
-      system: 'You provide concise concept descriptions. Respond with ONLY a single sentence. No formatting.',
+      system: `You provide concise concept descriptions.${roomContext} Respond with ONLY a single sentence. No formatting.`,
       messages: [{ role: 'user', content }]
     });
     return response.content[0].text.trim();
   }
 
-  async findSimilarConcepts(newConcept, existingConcepts) {
+  async findSimilarConcepts(newConcept, existingConcepts, { roomName, roomSummary } = {}) {
     if (existingConcepts.length === 0) return [];
 
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 200,
-      system: `You identify similar concepts in a knowledge graph. Given a new concept and a list of existing concepts, return the IDs of any existing concepts that are semantically very similar or overlapping. Respond ONLY with a JSON array of IDs, e.g. ["id1", "id2"]. If none are similar, respond with [].`,
+      system: `You identify similar concepts in a knowledge graph.${this._buildRoomContext(roomName, roomSummary)} Given a new concept and a list of existing concepts, return the IDs of any existing concepts that are semantically very similar or overlapping. Respond ONLY with a JSON array of IDs, e.g. ["id1", "id2"]. If none are similar, respond with [].`,
       messages: [{
         role: 'user',
         content: `New concept: "${newConcept.title}" - ${newConcept.description}\n\nExisting concepts:\n${existingConcepts.map(c => `- ID: ${c.id}, "${c.title}": ${c.description}`).join('\n')}`
@@ -184,13 +189,14 @@ Respond ONLY with valid JSON array, no markdown fences:
     }
   }
 
-  async suggestConnections(concept, existingNodes) {
+  async suggestConnections(concept, existingNodes, { roomName, roomSummary } = {}) {
     if (existingNodes.length === 0) return [];
 
+    const roomContext = this._buildRoomContext(roomName, roomSummary);
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 600,
-      system: `You analyze knowledge graphs and suggest meaningful connections between concepts. Given a concept and existing concepts in the graph, suggest the most valuable connections.
+      system: `You analyze knowledge graphs and suggest meaningful connections between concepts.${roomContext} Given a concept and existing concepts in the graph, suggest the most valuable connections.
 
 For each suggested connection, provide:
 - targetId: the ID of the existing concept to connect to
@@ -222,6 +228,13 @@ If no good connections exist, return [].`,
       console.error('Failed to parse connection suggestions:', e);
       return [];
     }
+  }
+
+  _buildRoomContext(roomName, roomSummary) {
+    let context = '';
+    if (roomName) context += `\nThe topic of this session is "${roomName}".`;
+    if (roomSummary) context += `\nSession context: ${roomSummary}`;
+    return context;
   }
 
   _cleanJSON(text) {

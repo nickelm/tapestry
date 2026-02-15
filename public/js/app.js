@@ -298,6 +298,90 @@ socket.on('joined', async ({ user, room }) => {
   }
 });
 
+// ========== ROOM DETAILS PANEL ==========
+
+const roomDetailsPanel = document.getElementById('room-details-panel');
+const roomDetailsName = document.getElementById('room-details-name');
+const roomDetailsSummary = document.getElementById('room-details-summary');
+const roomDetailsActions = document.getElementById('room-details-actions');
+const roomDetailsSave = document.getElementById('room-details-save');
+const roomDetailsCancel = document.getElementById('room-details-cancel');
+
+document.getElementById('room-label').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (roomDetailsPanel.classList.contains('visible')) {
+    closeRoomDetailsPanel();
+  } else {
+    openRoomDetailsPanel();
+  }
+});
+
+function openRoomDetailsPanel() {
+  if (!currentRoom) return;
+
+  roomDetailsName.value = currentRoom.name;
+  roomDetailsSummary.value = currentRoom.summary || '';
+
+  if (isAdmin) {
+    roomDetailsName.removeAttribute('readonly');
+    roomDetailsSummary.removeAttribute('readonly');
+    roomDetailsSummary.placeholder = 'Add a summary to guide LLM responses...';
+    roomDetailsActions.classList.remove('hidden');
+  } else {
+    roomDetailsName.setAttribute('readonly', true);
+    roomDetailsSummary.setAttribute('readonly', true);
+    roomDetailsSummary.placeholder = 'No summary set';
+    roomDetailsActions.classList.add('hidden');
+  }
+
+  roomDetailsPanel.classList.add('visible');
+  document.getElementById('room-label').classList.add('panel-open');
+}
+
+function closeRoomDetailsPanel() {
+  roomDetailsPanel.classList.remove('visible');
+  document.getElementById('room-label').classList.remove('panel-open');
+}
+
+document.addEventListener('click', (e) => {
+  if (roomDetailsPanel.classList.contains('visible')
+      && !roomDetailsPanel.contains(e.target)
+      && e.target !== document.getElementById('room-label')) {
+    closeRoomDetailsPanel();
+  }
+});
+
+roomDetailsCancel.addEventListener('click', () => {
+  closeRoomDetailsPanel();
+});
+
+roomDetailsSave.addEventListener('click', async () => {
+  const newName = roomDetailsName.value.trim();
+  const newSummary = roomDetailsSummary.value;
+
+  if (!newName) {
+    roomDetailsName.focus();
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/rooms/${currentRoom.id}/details`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName, summary: newSummary })
+    });
+    if (res.ok) {
+      closeRoomDetailsPanel();
+      showToast('Room details updated');
+    } else {
+      const err = await res.json();
+      showToast(err.error || 'Failed to update');
+    }
+  } catch (e) {
+    showToast('Failed to update room details');
+  }
+});
+
 socket.on('error', ({ message }) => {
   console.error('Socket error:', message);
   // Show user-facing errors (e.g., "This room is closed")
@@ -1893,6 +1977,7 @@ document.getElementById('leave-room-btn').addEventListener('click', () => {
 
 socket.on('left-room', () => {
   // Reset all app state
+  closeRoomDetailsPanel();
   currentUser = null;
   currentRoom = null;
   chatHistory = [];
@@ -2546,6 +2631,20 @@ socket.on('room:state-changed', ({ state }) => {
     timerVisible = false;
     const visBtn = document.getElementById('timer-visibility-btn');
     if (visBtn) visBtn.classList.remove('active');
+  }
+});
+
+// Socket: room details changed
+socket.on('room:details-changed', ({ name, summary }) => {
+  if (currentRoom) {
+    currentRoom.name = name;
+    currentRoom.summary = summary;
+  }
+  document.getElementById('room-label').textContent = name;
+
+  if (roomDetailsPanel.classList.contains('visible')) {
+    roomDetailsName.value = name;
+    roomDetailsSummary.value = summary || '';
   }
 });
 

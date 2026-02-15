@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
+    "archiver": "^7.0.1",
     "express": "^4.18.2",
     "express-session": "^1.19.0",
     "socket.io": "^4.7.4",
