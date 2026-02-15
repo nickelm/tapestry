@@ -48,6 +48,14 @@ async function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, user_id TEXT, user_name TEXT,
       action TEXT NOT NULL, target_type TEXT, target_id TEXT, details TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS interaction_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, roomId TEXT, userId TEXT, displayName TEXT,
+      eventType TEXT, payload JSON, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, roomId TEXT, userId TEXT, displayName TEXT,
+      category TEXT, text TEXT, contextJson JSON, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`
   ];
 
@@ -58,6 +66,22 @@ async function initDatabase() {
   if (!edgeCols.some(c => c.name === 'directed')) {
     db.run("ALTER TABLE edges ADD COLUMN directed INTEGER DEFAULT 1");
   }
+
+  // Migration: add room lifecycle fields
+  const roomCols = queryAll("PRAGMA table_info(rooms)");
+  if (!roomCols.some(c => c.name === 'state')) {
+    db.run("ALTER TABLE rooms ADD COLUMN state TEXT DEFAULT 'normal'");
+  }
+  if (!roomCols.some(c => c.name === 'durationMinutes')) {
+    db.run("ALTER TABLE rooms ADD COLUMN durationMinutes INTEGER DEFAULT NULL");
+  }
+  if (!roomCols.some(c => c.name === 'evalMode')) {
+    db.run("ALTER TABLE rooms ADD COLUMN evalMode INTEGER DEFAULT 0");
+  }
+
+  // Migration: rename legacy state values
+  db.run("UPDATE rooms SET state = 'normal' WHERE state = 'waiting'");
+  db.run("UPDATE rooms SET state = 'in-progress' WHERE state = 'active'");
 
   setInterval(saveDb, 30000);
   return db;
@@ -87,4 +111,18 @@ function run(sql, params = []) {
   db.run(sql, params);
 }
 
-module.exports = { initDatabase, saveDb, queryAll, queryOne, run };
+function logInteraction(roomId, userId, displayName, eventType, payload) {
+  run(
+    'INSERT INTO interaction_log (roomId, userId, displayName, eventType, payload, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+    [roomId, userId, displayName, eventType, JSON.stringify(payload), new Date().toISOString()]
+  );
+}
+
+function saveFeedback(roomId, userId, displayName, category, text, contextJson, timestamp) {
+  run(
+    'INSERT INTO feedback (roomId, userId, displayName, category, text, contextJson, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [roomId, userId, displayName, category, text, JSON.stringify(contextJson), timestamp]
+  );
+}
+
+module.exports = { initDatabase, saveDb, queryAll, queryOne, run, logInteraction, saveFeedback };

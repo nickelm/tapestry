@@ -32,6 +32,189 @@ body {
   overflow: hidden;
 }
 
+/* --- UTILITY --- */
+.hidden { display: none !important; }
+
+/* --- ADMIN CONTROL STRIP --- */
+.admin-control-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+  z-index: 1000;
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+}
+
+body:has(.admin-control-strip:not(.hidden)) #app-screen {
+  margin-top: 40px;
+  height: calc(100vh - 40px);
+}
+
+.control-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.control-separator {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+}
+
+.admin-badge {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.control-icon {
+  font-size: 15px;
+}
+
+.control-icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: all 0.15s;
+  line-height: 1;
+}
+
+.control-icon-btn:hover {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.control-icon-btn.active {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.control-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.control-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.control-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.control-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.state-select.normal { background: #fef3c7; border-color: #f59e0b; color: #92400e; }
+.state-select.in-progress { background: #d1fae5; border-color: #10b981; color: #065f46; }
+.state-select.posttest { background: #dbeafe; border-color: #3b82f6; color: #1e40af; }
+.state-select.closed { background: #e5e7eb; border-color: #6b7280; color: #374151; }
+
+.timer-btn {
+  font-family: 'IBM Plex Mono', monospace;
+  min-width: 60px;
+  text-align: center;
+}
+
+.timer-btn.running {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.timer-btn.expired {
+  animation: timer-flash 1s ease-in-out 3;
+}
+
+@keyframes timer-flash {
+  0%, 100% { background: var(--bg); }
+  50% { background: #fef3c7; }
+}
+
+.toggle-btn {
+  position: relative;
+  padding-left: 24px;
+  min-width: 60px;
+}
+
+.toggle-indicator {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  transition: background 0.15s;
+}
+
+.toggle-btn[data-enabled="true"] .toggle-indicator {
+  background: #10b981;
+}
+
+.action-btn:hover {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.user-count-control {
+  margin-left: auto;
+  font-weight: 500;
+}
+
+/* --- ROOM TIMER (visible to all users) --- */
+.room-timer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.timer-icon {
+  font-size: 14px;
+}
+
 /* --- LOGIN SCREEN --- */
 #login-screen {
   display: flex;
@@ -135,8 +318,54 @@ body {
   background: var(--accent-light);
 }
 
-.room-item .room-name { font-weight: 500; }
+.room-item .room-name { font-weight: 500; flex: 1; }
 .room-item .room-arrow { color: var(--text-muted); font-size: 12px; }
+
+.room-item-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.room-state-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.room-state-badge.in-progress { background: #d1fae5; color: #065f46; }
+.room-state-badge.posttest { background: #dbeafe; color: #1e40af; }
+.room-state-badge.closed { background: #e5e7eb; color: #374151; }
+
+.room-item.room-closed {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.room-item.room-closed:hover {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.room-delete-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  border-radius: 3px;
+  transition: all 0.15s;
+}
+
+.room-delete-btn:hover {
+  color: #dc2626;
+  background: #fee2e2;
+}
 
 .create-room-toggle {
   font-size: 13px;
@@ -1575,3 +1804,76 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* --- FEEDBACK BUTTON & MODAL --- */
+
+.feedback-button {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: all 0.15s;
+}
+
+.feedback-button:hover {
+  border-color: var(--text-muted);
+  box-shadow: var(--shadow-lg);
+}
+
+.feedback-modal {
+  position: relative;
+}
+
+.feedback-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.feedback-close:hover {
+  color: var(--text);
+}
+
+.feedback-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.feedback-categories label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.feedback-thanks {
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 32px 0;
+}

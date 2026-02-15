@@ -22,13 +22,54 @@
         <div style="font-size: 13px; color: var(--text-muted); padding: 8px;">Loading rooms...</div>
       </div>
 
-      <span class="create-room-toggle" id="create-room-toggle">+ Create new room</span>
+      <span class="create-room-toggle hidden" id="create-room-toggle">+ Create new room</span>
       <div class="create-room-row" id="create-room-row">
         <input type="text" id="new-room-name" placeholder="Room name">
+        <input type="number" id="new-room-duration" placeholder="Minutes" min="1" max="120" style="width: 80px;">
         <button id="create-room-btn">Create</button>
       </div>
 
       <button id="join-btn" disabled>Join Room</button>
+    </div>
+  </div>
+
+  <!-- ADMIN CONTROL STRIP -->
+  <div id="admin-control-strip" class="admin-control-strip hidden">
+    <div class="control-item admin-badge">
+      <span class="admin-label">Admin</span>
+    </div>
+    <div class="control-separator"></div>
+    <div class="control-item">
+      <span class="control-label">Room:</span>
+      <select id="room-state-select" class="control-select state-select">
+        <option value="normal">normal</option>
+        <option value="in-progress">in progress</option>
+        <option value="posttest">posttest</option>
+        <option value="closed">closed</option>
+      </select>
+    </div>
+    <div class="control-separator"></div>
+    <div class="control-item">
+      <button id="timer-visibility-btn" class="control-icon-btn" title="Toggle timer visibility for all users">&#9201;</button>
+      <button id="timer-display" class="control-btn timer-btn" title="Click: set duration. Right-click: start/pause.">
+        <span id="timer-text">--:--</span>
+      </button>
+    </div>
+    <div class="control-separator"></div>
+    <div class="control-item">
+      <span class="control-label">ESM:</span>
+      <button id="esm-toggle-btn" class="control-btn toggle-btn" data-enabled="false">
+        <span class="toggle-indicator"></span>
+        <span id="esm-toggle-text">OFF</span>
+      </button>
+    </div>
+    <div class="control-separator"></div>
+    <button id="trigger-posttest-btn" class="control-btn action-btn">Post-Test</button>
+    <button id="export-data-btn" class="control-btn action-btn">Export</button>
+    <div class="control-separator"></div>
+    <div class="control-item user-count-control">
+      <span class="control-icon">&#128100;</span>
+      <span id="admin-user-count">0</span>
     </div>
   </div>
 
@@ -62,6 +103,10 @@
     <div id="graph-area">
       <div class="room-bar">
         <div class="room-label" id="room-label">Room</div>
+        <div class="room-timer" id="room-timer" style="display: none;">
+          <span class="timer-icon">&#9201;</span>
+          <span id="room-timer-text">--:--</span>
+        </div>
         <div class="user-count" id="user-count">0 users</div>
         <div class="presence-dots" id="presence-dots"></div>
       </div>
@@ -136,6 +181,34 @@
     <div class="context-menu-separator"></div>
     <div class="context-menu-item danger" data-action="delete-edge">
       <span class="cm-icon">&#10005;</span> <span class="cm-label">Delete connection</span>
+    </div>
+  </div>
+
+  <!-- Feedback Button -->
+  <button class="feedback-button" id="feedback-btn" title="Send feedback">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+    Feedback
+  </button>
+
+  <!-- Feedback Modal -->
+  <div class="modal-overlay" id="feedback-modal">
+    <div class="modal-card feedback-modal">
+      <h3>Feedback</h3>
+      <button class="feedback-close" id="feedback-close">&times;</button>
+      <label class="harvest-form-label">Category</label>
+      <div class="feedback-categories" id="feedback-categories">
+        <label><input type="radio" name="feedback-cat" value="bug"> Bug / something broken</label>
+        <label><input type="radio" name="feedback-cat" value="suggestion"> Suggestion / feature idea</label>
+        <label><input type="radio" name="feedback-cat" value="confusion"> Confusion / unclear how to...</label>
+        <label><input type="radio" name="feedback-cat" value="general" checked> General comment</label>
+      </div>
+      <label class="harvest-form-label">What happened?</label>
+      <textarea class="harvest-form-textarea" id="feedback-text" rows="4" placeholder="Tell us what's on your mind..."></textarea>
+      <div class="modal-actions">
+        <button id="feedback-submit" class="primary">Submit Feedback</button>
+      </div>
     </div>
   </div>
 

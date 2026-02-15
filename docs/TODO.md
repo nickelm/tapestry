@@ -12,3 +12,6 @@
   - Accessed through the board name panel
 * Need a way to suggest connections
   - Perhaps show a list (and strength) of the existing concepts on screen
+  
+
+  http://localhost:3001/?admin=mySecret123

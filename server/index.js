@@ -3,7 +3,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const { initDatabase, saveDb, queryAll, queryOne, run } = require('./database');
+const session = require('express-session');
+const { initDatabase, saveDb, queryAll, queryOne, run, logInteraction, saveFeedback } = require('./database');
 const { LLMService } = require('./llm');
 
 const app = express();
@@ -15,18 +16,56 @@ const llm = new LLMService();
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use(express.json());
 
+// --- SESSION & AUTH ---
+
+const sessionMiddleware = session({
+  secret: process.env.SESSION_SECRET || 'tapestry-dev-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, sameSite: 'lax', maxAge: 24 * 60 * 60 * 1000 }
+});
+app.use(sessionMiddleware);
+
+function requireAdmin(req, res, next) {
+  if (req.session.admin === true) return next();
+  res.status(403).json({ error: 'Admin access required' });
+}
+
+app.get('/api/auth/admin', (req, res) => {
+  const { secret } = req.query;
+  const ADMIN_SECRET = process.env.ADMIN_SECRET;
+
+  if (!ADMIN_SECRET) {
+    return res.status(500).json({ error: 'Admin secret not configured' });
+  }
+
+  if (secret === ADMIN_SECRET) {
+    req.session.admin = true;
+    return res.json({ success: true, role: 'admin' });
+  }
+
+  return res.status(403).json({ error: 'Invalid admin secret' });
+});
+
+app.get('/api/auth/status', (req, res) => {
+  const role = req.session.admin === true ? 'admin' : 'user';
+  res.json({ role });
+});
+
 // --- REST API ---
 
 app.get('/api/rooms', (req, res) => {
   res.json(queryAll('SELECT * FROM rooms ORDER BY created_at DESC'));
 });
 
-app.post('/api/rooms', (req, res) => {
-  const { name } = req.body;
+app.post('/api/rooms', requireAdmin, (req, res) => {
+  const { name, durationMinutes } = req.body;
   const id = uuidv4();
-  run('INSERT INTO rooms (id, name) VALUES (?, ?)', [id, name]);
+  const duration = durationMinutes ? parseInt(durationMinutes, 10) : null;
+  run('INSERT INTO rooms (id, name, state, durationMinutes) VALUES (?, ?, ?, ?)',
+    [id, name, 'normal', duration]);
   saveDb();
-  res.json({ id, name });
+  res.json({ id, name, state: 'normal', durationMinutes: duration });
 });
 
 app.get('/api/rooms/:roomId/state', (req, res) => {
@@ -89,7 +128,139 @@ app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
   }
 });
 
+app.get('/api/rooms/:roomId/export/interactions', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const interactions = queryAll(
+    'SELECT * FROM interaction_log WHERE roomId = ? ORDER BY timestamp ASC', [rid]
+  );
+  const parsed = interactions.map(row => ({
+    ...row,
+    payload: row.payload ? JSON.parse(row.payload) : null
+  }));
+
+  res.json({
+    roomId: rid,
+    roomName: room.name,
+    exportedAt: new Date().toISOString(),
+    count: parsed.length,
+    interactions: parsed
+  });
+});
+
+app.get('/api/rooms/:roomId/export/feedback', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const rows = queryAll(
+    'SELECT * FROM feedback WHERE roomId = ? ORDER BY timestamp ASC', [rid]
+  );
+  const parsed = rows.map(row => ({
+    ...row,
+    contextJson: row.contextJson ? JSON.parse(row.contextJson) : null
+  }));
+
+  res.json({
+    roomId: rid,
+    roomName: room.name,
+    exportedAt: new Date().toISOString(),
+    count: parsed.length,
+    feedback: parsed
+  });
+});
+
+// --- ROOM LIFECYCLE ---
+
+app.post('/api/rooms/:roomId/state', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const { state: requestedState } = req.body;
+  const validStates = ['normal', 'in-progress', 'posttest', 'closed'];
+  if (!requestedState || !validStates.includes(requestedState)) {
+    return res.status(400).json({ error: `Invalid state. Must be one of: ${validStates.join(', ')}` });
+  }
+
+  const oldState = room.state || 'normal';
+  run('UPDATE rooms SET state = ? WHERE id = ?', [requestedState, rid]);
+  saveDb();
+
+  io.to(rid).emit('room:state-changed', { state: requestedState });
+  if (requestedState === 'posttest' && oldState !== 'posttest') {
+    io.to(rid).emit('posttest:trigger');
+  }
+
+  res.json({ state: requestedState });
+});
+
+app.delete('/api/rooms/:roomId', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  // Clean up all room data
+  const nodeIds = queryAll('SELECT id FROM nodes WHERE room_id = ?', [rid]).map(n => n.id);
+  for (const nid of nodeIds) {
+    run('DELETE FROM node_contributors WHERE node_id = ?', [nid]);
+    run('DELETE FROM node_upvotes WHERE node_id = ?', [nid]);
+    run('DELETE FROM merged_nodes WHERE parent_id = ?', [nid]);
+  }
+  run('DELETE FROM nodes WHERE room_id = ?', [rid]);
+  run('DELETE FROM edges WHERE room_id = ?', [rid]);
+  run('DELETE FROM users WHERE room_id = ?', [rid]);
+  run('DELETE FROM activity_log WHERE room_id = ?', [rid]);
+  run('DELETE FROM interaction_log WHERE roomId = ?', [rid]);
+  run('DELETE FROM feedback WHERE roomId = ?', [rid]);
+  run('DELETE FROM rooms WHERE id = ?', [rid]);
+  saveDb();
+
+  res.json({ success: true });
+});
+
+app.post('/api/rooms/:roomId/eval-mode', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const { enabled } = req.body;
+  const evalMode = enabled ? 1 : 0;
+
+  run('UPDATE rooms SET evalMode = ? WHERE id = ?', [evalMode, rid]);
+  saveDb();
+
+  io.to(rid).emit('room:eval-mode-changed', { enabled: !!enabled });
+  res.json({ evalMode: !!enabled });
+});
+
+app.post('/api/rooms/:roomId/timer', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const { action } = req.body;
+  io.to(rid).emit('room:timer-control', { action });
+  res.json({ success: true });
+});
+
+app.get('/api/rooms/:roomId/export/all', requireAdmin, (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  // Placeholder — full ZIP bundle to be implemented in Step 6 of the spec
+  res.json({
+    roomId: rid,
+    roomName: room.name,
+    state: room.state,
+    durationMinutes: room.durationMinutes,
+    evalMode: room.evalMode === 1,
+    exportedAt: new Date().toISOString(),
+    note: 'Full ZIP export will be implemented in Step 6'
+  });
+});
+
 // --- SOCKET.IO ---
+
+// Share session with Socket.IO so we can check admin status
+io.engine.use(sessionMiddleware);
 
 const COLORS = [
   '#e76f51', '#2a9d8f', '#e9c46a', '#264653', '#f4a261',
@@ -105,10 +276,18 @@ io.on('connection', (socket) => {
   let currentUser = null;
   let currentRoom = null;
   let activeAbortController = null;
+  let joinedAt = null;
 
   socket.on('join-room', ({ roomId, userName }) => {
     const room = queryOne('SELECT * FROM rooms WHERE id = ?', [roomId]);
     if (!room) { socket.emit('error', { message: 'Room not found' }); return; }
+
+    // Block non-admin users from joining closed rooms
+    const isSocketAdmin = socket.request.session && socket.request.session.admin === true;
+    if (room.state === 'closed' && !isSocketAdmin) {
+      socket.emit('error', { message: 'This room is closed' });
+      return;
+    }
 
     const userId = uuidv4();
     const color = COLORS[colorIndex++ % COLORS.length];
@@ -128,11 +307,20 @@ io.on('connection', (socket) => {
     run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, details) VALUES (?, ?, ?, ?, ?, ?)',
       [roomId, userId, userName, 'joined', 'room', room.name]);
     socket.to(roomId).emit('activity', { user_name: userName, action: 'joined', target_type: 'room', details: room.name, created_at: new Date().toISOString() });
+    joinedAt = Date.now();
+    logInteraction(roomId, userId, userName, 'session:join', { roomId, displayName: userName });
     saveDb();
   });
 
   socket.on('chat', async ({ messages, roomName, breadcrumb }) => {
     if (!currentUser || !currentRoom) return;
+
+    const lastMessage = messages[messages.length - 1];
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'chat:send', {
+      messageText: lastMessage ? lastMessage.content : '',
+      parentId: breadcrumb && breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1] : null,
+      threadDepth: breadcrumb ? breadcrumb.length : 0
+    });
 
     // Abort any previous pending request
     if (activeAbortController) {
@@ -146,6 +334,11 @@ io.on('connection', (socket) => {
       const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
       const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal, roomName, breadcrumb });
       if (!abortController.signal.aborted) {
+        logInteraction(currentRoom, currentUser.id, currentUser.name, 'chat:response', {
+          responseId: uuidv4(),
+          conceptCount: result.concepts ? result.concepts.length : 0,
+          conceptTitles: result.concepts ? result.concepts.map(c => c.title) : []
+        });
         socket.emit('chat-response', result);
       }
     } catch (err) {
@@ -170,6 +363,7 @@ io.on('connection', (socket) => {
 
   socket.on('harvest', async ({ title, description }) => {
     if (!currentUser || !currentRoom) return;
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'concept:harvest', { conceptTitle: title, edited: false });
 
     const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
 
@@ -190,6 +384,7 @@ io.on('connection', (socket) => {
 
   socket.on('force-harvest', async ({ title, description }) => {
     if (!currentUser || !currentRoom) return;
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'concept:harvest', { conceptTitle: title, edited: false });
     const nodeId = addNodeToRoom(title, description, currentUser, currentRoom);
     suggestConnectionsForNode(nodeId, title, description, currentRoom);
   });
@@ -281,6 +476,7 @@ io.on('connection', (socket) => {
 
     io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label, directed });
     io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'connected', target_type: 'edge', target_id: edgeId, details: `${source.title} → ${target.title}: "${label}"`, created_at: new Date().toISOString() });
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'graph:connect', { sourceNodeId: sourceId, targetNodeId: targetId, label });
     saveDb();
   });
 
@@ -316,6 +512,7 @@ io.on('connection', (socket) => {
         io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: nodeId, target_id: newId, label, directed: edgeDirected, created_by: currentUser.id });
       }
 
+      logInteraction(currentRoom, currentUser.id, currentUser.name, 'graph:expand', { nodeId });
       io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'expanded', target_type: 'node', target_id: nodeId, details: `${node.title} → ${expansions.map(e => e.title).join(', ')}`, created_at: new Date().toISOString() });
       saveDb();
     } catch (e) {
@@ -406,6 +603,7 @@ io.on('connection', (socket) => {
     if (!currentUser || !currentRoom) return;
     const node = queryOne('SELECT * FROM nodes WHERE id = ?', [nodeId]);
     if (!node) return;
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'graph:delete', { nodeId });
 
     run('DELETE FROM edges WHERE source_id = ? OR target_id = ?', [nodeId, nodeId]);
     run('DELETE FROM node_contributors WHERE node_id = ?', [nodeId]);
@@ -430,6 +628,7 @@ io.on('connection', (socket) => {
     }
     const node = queryOne('SELECT upvotes FROM nodes WHERE id = ?', [nodeId]);
     io.to(currentRoom).emit('node-upvoted', { id: nodeId, upvotes: node.upvotes });
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'graph:upvote', { nodeId });
     saveDb();
   });
 
@@ -466,6 +665,7 @@ io.on('connection', (socket) => {
 
       io.to(currentRoom).emit('nodes-merged', { keepId, mergeId, title: merged.title, description: merged.description, contributors });
       io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'merged', target_type: 'node', target_id: keepId, details: `${keepNode.title} + ${mergeNode.title} → ${merged.title}`, created_at: new Date().toISOString() });
+      logInteraction(currentRoom, currentUser.id, currentUser.name, 'graph:merge', { nodeIds: [keepId, mergeId], resultTitle: merged.title });
       saveDb();
     } catch (e) {
       console.error('Merge failed:', e);
@@ -539,6 +739,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('panel:toggle', ({ panelState }) => {
+    if (!currentUser || !currentRoom) return;
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'panel:toggle', { panelState });
+  });
+
+  socket.on('feedback:submit', (data) => {
+    if (!currentUser || !currentRoom) return;
+    saveFeedback(currentRoom, currentUser.id, currentUser.name, data.category, data.text, data.context, data.timestamp);
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'feedback:submit', { category: data.category, context: data.context });
+    saveDb();
+    socket.emit('feedback:received');
+  });
+
   socket.on('hover-node', ({ nodeId }) => {
     if (!currentUser || !currentRoom) return;
     socket.to(currentRoom).emit('user-hover', { userId: currentUser.id, userName: currentUser.name, color: currentUser.color, nodeId });
@@ -551,6 +764,8 @@ io.on('connection', (socket) => {
 
   socket.on('leave-room', () => {
     if (currentUser && currentRoom) {
+      const duration = joinedAt ? Math.round((Date.now() - joinedAt) / 1000) : null;
+      logInteraction(currentRoom, currentUser.id, currentUser.name, 'session:leave', { roomId: currentRoom, duration });
       socket.leave(currentRoom);
       io.to(currentRoom).emit('user-left', { userId: currentUser.id });
       io.to(currentRoom).emit('activity', {
@@ -570,6 +785,8 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (currentUser && currentRoom) {
+      const duration = joinedAt ? Math.round((Date.now() - joinedAt) / 1000) : null;
+      logInteraction(currentRoom, currentUser.id, currentUser.name, 'session:leave', { roomId: currentRoom, duration });
       io.to(currentRoom).emit('user-left', { userId: currentUser.id });
       io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'left', target_type: 'room', details: '', created_at: new Date().toISOString() });
 

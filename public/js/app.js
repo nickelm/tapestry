@@ -15,6 +15,45 @@ let pendingHarvest = null;
 let selectedRoomId = null;
 let myUpvotes = new Set();
 let graphTitleMap = new Map(); // lowercase title -> nodeId (F10: shared graph awareness)
+let lastInteractionEventType = null;
+let isAdmin = false;
+
+// ========== ADMIN AUTH ==========
+
+(async function initAdminAuth() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const adminSecret = urlParams.get('admin');
+
+  if (adminSecret) {
+    try {
+      const res = await fetch(`/api/auth/admin?secret=${encodeURIComponent(adminSecret)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.role === 'admin') isAdmin = true;
+      }
+    } catch (e) {
+      console.error('Admin auth failed:', e);
+    }
+    history.replaceState(null, '', window.location.pathname);
+  } else {
+    try {
+      const res = await fetch('/api/auth/status');
+      const data = await res.json();
+      if (data.role === 'admin') isAdmin = true;
+    } catch (e) {
+      // Not authenticated
+    }
+  }
+
+  updateAdminUI();
+})();
+
+function updateAdminUI() {
+  const toggle = document.getElementById('create-room-toggle');
+  if (isAdmin) {
+    toggle.classList.remove('hidden');
+  }
+}
 
 // ========== MARKED.JS CONFIG ==========
 marked.setOptions({ gfm: true, breaks: true });
@@ -80,19 +119,39 @@ async function loadRooms() {
     return;
   }
 
-  list.innerHTML = rooms.map(r =>
-    `<div class="room-item" data-room-id="${r.id}">
+  list.innerHTML = rooms.map(r => {
+    const stateLabel = r.state && r.state !== 'normal' ? `<span class="room-state-badge ${r.state}">${r.state === 'in-progress' ? 'in progress' : r.state}</span>` : '';
+    const deleteBtn = isAdmin ? `<button class="room-delete-btn" data-room-id="${r.id}" title="Delete room">&times;</button>` : '';
+    const closedClass = (!isAdmin && r.state === 'closed') ? ' room-closed' : '';
+    return `<div class="room-item${closedClass}" data-room-id="${r.id}" data-room-state="${r.state || 'normal'}">
       <span class="room-name">${r.name}</span>
-      <span class="room-arrow">&rarr;</span>
-    </div>`
-  ).join('');
+      ${stateLabel}
+      <span class="room-item-right">${deleteBtn}<span class="room-arrow">&rarr;</span></span>
+    </div>`;
+  }).join('');
 
   list.querySelectorAll('.room-item').forEach(el => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.room-delete-btn')) return;
+      // Block non-admin from selecting closed rooms
+      if (!isAdmin && el.dataset.roomState === 'closed') return;
       list.querySelectorAll('.room-item').forEach(e => e.classList.remove('selected'));
       el.classList.add('selected');
       selectedRoomId = el.dataset.roomId;
       updateJoinButton();
+    });
+  });
+
+  list.querySelectorAll('.room-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const roomId = btn.dataset.roomId;
+      const roomName = btn.closest('.room-item').querySelector('.room-name').textContent;
+      if (!confirm(`Delete room "${roomName}"? This cannot be undone.`)) return;
+      await fetch(`/api/rooms/${roomId}`, { method: 'DELETE' });
+      if (selectedRoomId === roomId) selectedRoomId = null;
+      updateJoinButton();
+      loadRooms();
     });
   });
 }
@@ -113,10 +172,16 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
   const name = document.getElementById('new-room-name').value.trim();
   if (!name) return;
 
+  const durationInput = document.getElementById('new-room-duration');
+  const body = { name };
+  if (durationInput && durationInput.value) {
+    body.durationMinutes = parseInt(durationInput.value, 10);
+  }
+
   const res = await fetch('/api/rooms', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name })
+    body: JSON.stringify(body)
   });
   const room = await res.json();
   selectedRoomId = room.id;
@@ -130,6 +195,7 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
     }
   });
   document.getElementById('create-room-row').classList.remove('visible');
+  if (durationInput) durationInput.value = '';
   updateJoinButton();
 });
 
@@ -192,10 +258,26 @@ socket.on('joined', async ({ user, room }) => {
   }
 
   updateUserCount(state.userCount || 1);
+
+  // Initialize admin controls after joining
+  if (isAdmin) {
+    initAdminControls(room);
+  }
+
+  // Initialize room timer state (but don't show to users until admin starts it)
+  if (room.durationMinutes) {
+    roomTimerState.durationMinutes = room.durationMinutes;
+    roomTimerState.remainingSeconds = room.durationMinutes * 60;
+    updateRoomTimerDisplay();
+  }
 });
 
 socket.on('error', ({ message }) => {
   console.error('Socket error:', message);
+  // Show user-facing errors (e.g., "This room is closed")
+  if (message && document.getElementById('login-screen').style.display !== 'none') {
+    alert(message);
+  }
 });
 
 // ========== SOCKET: REAL-TIME EVENTS ==========
@@ -279,6 +361,8 @@ socket.on('user-left', ({ userId }) => {
 
 socket.on('user-count', ({ count }) => {
   updateUserCount(count);
+  const adminCount = document.getElementById('admin-user-count');
+  if (adminCount) adminCount.textContent = count;
 });
 
 socket.on('user-hover', ({ userId, userName, color, nodeId }) => {
@@ -349,6 +433,7 @@ chatSend.addEventListener('click', () => sendChat());
 function sendChat(parentThreadId = null) {
   const text = chatInput.value.trim();
   if (!text) return;
+  lastInteractionEventType = 'chat:send';
 
   // Create thread node and render section
   const threadNode = createThreadNode(text, parentThreadId);
@@ -600,6 +685,7 @@ function createChatResponseElement(text, concepts) {
         if (generated) description = generated;
       }
 
+      lastInteractionEventType = 'concept:harvest';
       socket.emit('harvest', { title, description });
     });
   });
@@ -916,6 +1002,7 @@ harvestFormSubmit.addEventListener('click', (e) => {
   const description = harvestFormDesc.value.trim();
   if (!title) return;
 
+  lastInteractionEventType = 'concept:harvest';
   socket.emit('harvest', { title, description });
 
   if (activeConceptSpan) {
@@ -1346,6 +1433,7 @@ contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
     const action = item.dataset.action;
     if (!contextNodeId) return;
 
+    lastInteractionEventType = 'graph:' + action;
     switch (action) {
       case 'explore':
         handleNodeDoubleClick(contextNodeId);
@@ -1691,11 +1779,25 @@ document.getElementById('chat-toggle').addEventListener('click', () => {
   const toggle = document.getElementById('chat-toggle');
   panel.classList.toggle('collapsed');
   toggle.textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+  lastInteractionEventType = 'panel:toggle';
+  socket.emit('panel:toggle', {
+    panelState: {
+      chat: !panel.classList.contains('collapsed'),
+      activity: !document.getElementById('activity-panel').classList.contains('collapsed')
+    }
+  });
 });
 
 document.getElementById('activity-toggle').addEventListener('click', () => {
   const panel = document.getElementById('activity-panel');
   panel.classList.toggle('collapsed');
+  lastInteractionEventType = 'panel:toggle';
+  socket.emit('panel:toggle', {
+    panelState: {
+      chat: !document.getElementById('chat-panel').classList.contains('collapsed'),
+      activity: !panel.classList.contains('collapsed')
+    }
+  });
 });
 
 // ========== RESIZABLE CHAT PANEL ==========
@@ -1800,6 +1902,18 @@ socket.on('left-room', () => {
   document.getElementById('connection-banner').classList.remove('visible');
   document.getElementById('merge-banner').classList.remove('visible');
 
+  // Hide admin control strip
+  const strip = document.getElementById('admin-control-strip');
+  if (strip) strip.classList.add('hidden');
+
+  // Reset timer state
+  pauseTimer();
+  roomTimerState.durationMinutes = null;
+  roomTimerState.remainingSeconds = null;
+  timerVisible = false;
+  const roomTimer = document.getElementById('room-timer');
+  if (roomTimer) roomTimer.style.display = 'none';
+
   // Switch screens
   document.getElementById('app-screen').classList.remove('active');
   document.getElementById('login-screen').style.display = 'flex';
@@ -1863,6 +1977,388 @@ function escapeAttr(str) {
   return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// ========== FEEDBACK MODAL ==========
+
+const feedbackModal = document.getElementById('feedback-modal');
+const feedbackText = document.getElementById('feedback-text');
+
+function showFeedbackModal() {
+  feedbackModal.classList.add('visible');
+  feedbackText.focus();
+}
+
+function hideFeedbackModal() {
+  feedbackModal.classList.remove('visible');
+  feedbackText.value = '';
+  const defaultRadio = document.querySelector('input[name="feedback-cat"][value="general"]');
+  if (defaultRadio) defaultRadio.checked = true;
+}
+
+document.getElementById('feedback-btn').addEventListener('click', showFeedbackModal);
+document.getElementById('feedback-close').addEventListener('click', hideFeedbackModal);
+
+feedbackModal.addEventListener('click', (e) => {
+  if (e.target === feedbackModal) hideFeedbackModal();
+});
+
+document.getElementById('feedback-submit').addEventListener('click', () => {
+  const catRadio = document.querySelector('input[name="feedback-cat"]:checked');
+  const category = catRadio ? catRadio.value : 'general';
+  const text = feedbackText.value.trim();
+  if (!text) return;
+
+  const context = {
+    nodeCount: graph ? graph.nodes.length : 0,
+    threadDepth: activeThreadId ? (threadMap.get(activeThreadId)?.depth ?? 0) : 0,
+    lastEventType: lastInteractionEventType,
+    panelState: {
+      chat: !document.getElementById('chat-panel').classList.contains('collapsed'),
+      activity: !document.getElementById('activity-panel').classList.contains('collapsed')
+    }
+  };
+
+  socket.emit('feedback:submit', {
+    category,
+    text,
+    timestamp: new Date().toISOString(),
+    context
+  });
+
+  // Show thanks confirmation
+  const card = feedbackModal.querySelector('.modal-card');
+  const originalHTML = card.innerHTML;
+  card.innerHTML = '<div class="feedback-thanks">Thanks!</div>';
+  setTimeout(() => {
+    card.innerHTML = originalHTML;
+    hideFeedbackModal();
+    // Re-attach close button listener after DOM replacement
+    document.getElementById('feedback-close').addEventListener('click', hideFeedbackModal);
+  }, 1500);
+});
+
+// ========== ADMIN CONTROLS ==========
+
+let roomTimerState = {
+  durationMinutes: null,
+  remainingSeconds: null,
+  running: false,
+  interval: null
+};
+
+let timerVisible = false;
+
+function initAdminControls(room) {
+  const strip = document.getElementById('admin-control-strip');
+  if (!strip) return;
+  strip.classList.remove('hidden');
+
+  const roomStateSelect = document.getElementById('room-state-select');
+  const timerDisplay = document.getElementById('timer-display');
+  const timerVisibilityBtn = document.getElementById('timer-visibility-btn');
+  const esmToggleBtn = document.getElementById('esm-toggle-btn');
+  const esmToggleText = document.getElementById('esm-toggle-text');
+  const triggerPosttestBtn = document.getElementById('trigger-posttest-btn');
+  const exportDataBtn = document.getElementById('export-data-btn');
+  const adminUserCount = document.getElementById('admin-user-count');
+
+  // Set initial room state
+  const state = room.state || 'normal';
+  roomStateSelect.value = state;
+  roomStateSelect.className = `control-select state-select ${state}`;
+
+  // Set initial timer
+  if (room.durationMinutes) {
+    roomTimerState.durationMinutes = room.durationMinutes;
+    roomTimerState.remainingSeconds = room.durationMinutes * 60;
+    updateTimerDisplay();
+  }
+
+  // Set initial ESM state
+  const evalMode = room.evalMode === 1;
+  esmToggleBtn.dataset.enabled = evalMode;
+  esmToggleText.textContent = evalMode ? 'ON' : 'OFF';
+
+  // Timer visibility toggle (icon button)
+  timerVisibilityBtn.addEventListener('click', () => {
+    timerVisible = !timerVisible;
+    timerVisibilityBtn.classList.toggle('active', timerVisible);
+    const roomTimer = document.getElementById('room-timer');
+    if (roomTimer) roomTimer.style.display = timerVisible ? 'flex' : 'none';
+    // Broadcast to all users
+    fetch(`/api/rooms/${currentRoom.id}/timer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: timerVisible ? 'show' : 'hide' })
+    });
+  });
+
+  // Room state: dropdown change
+  roomStateSelect.addEventListener('change', async () => {
+    const newState = roomStateSelect.value;
+    try {
+      const res = await fetch(`/api/rooms/${currentRoom.id}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: newState })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        console.warn('State change failed:', err.error);
+        roomStateSelect.value = state; // revert on failure
+        return;
+      }
+      const data = await res.json();
+      roomStateSelect.className = `control-select state-select ${data.state}`;
+
+      // Auto-start timer when switching to in-progress
+      if (data.state === 'in-progress' && roomTimerState.durationMinutes) {
+        if (!roomTimerState.running) {
+          startTimer();
+          // Show timer and broadcast
+          timerVisible = true;
+          timerVisibilityBtn.classList.add('active');
+          const roomTimer = document.getElementById('room-timer');
+          if (roomTimer) roomTimer.style.display = 'flex';
+          fetch(`/api/rooms/${currentRoom.id}/timer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'start' })
+          });
+        }
+      }
+
+      // Auto-reset timer when switching to normal
+      if (data.state === 'normal') {
+        resetTimer();
+        timerVisible = false;
+        timerVisibilityBtn.classList.remove('active');
+        fetch(`/api/rooms/${currentRoom.id}/timer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset' })
+        });
+      }
+    } catch (e) {
+      console.error('Failed to change room state:', e);
+    }
+  });
+
+  // Timer: click to set duration
+  timerDisplay.addEventListener('click', () => {
+    const currentMins = roomTimerState.durationMinutes || '';
+    const input = prompt('Set timer duration (minutes):', currentMins);
+    if (input === null) return; // cancelled
+    const mins = parseInt(input, 10);
+    if (!mins || mins < 1 || mins > 120) return;
+    roomTimerState.durationMinutes = mins;
+    roomTimerState.remainingSeconds = mins * 60;
+    roomTimerState.running = false;
+    if (roomTimerState.interval) {
+      clearInterval(roomTimerState.interval);
+      roomTimerState.interval = null;
+    }
+    updateTimerDisplay();
+    updateRoomTimerDisplay();
+  });
+
+  // Timer: right-click to start/pause
+  timerDisplay.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (!roomTimerState.durationMinutes) return;
+    if (roomTimerState.running) {
+      pauseTimer();
+      fetch(`/api/rooms/${currentRoom.id}/timer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pause' })
+      });
+    } else {
+      startTimer();
+      // Auto-show timer when started
+      if (!timerVisible) {
+        timerVisible = true;
+        timerVisibilityBtn.classList.add('active');
+        const roomTimer = document.getElementById('room-timer');
+        if (roomTimer) roomTimer.style.display = 'flex';
+      }
+      fetch(`/api/rooms/${currentRoom.id}/timer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start' })
+      });
+    }
+  });
+
+  // ESM toggle
+  esmToggleBtn.addEventListener('click', async () => {
+    const newState = esmToggleBtn.dataset.enabled !== 'true';
+    try {
+      await fetch(`/api/rooms/${currentRoom.id}/eval-mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newState })
+      });
+      esmToggleBtn.dataset.enabled = newState;
+      esmToggleText.textContent = newState ? 'ON' : 'OFF';
+    } catch (e) {
+      console.error('Failed to toggle eval mode:', e);
+    }
+  });
+
+  // Post-Test button
+  triggerPosttestBtn.addEventListener('click', async () => {
+    if (!confirm('Push post-test survey to all connected users?')) return;
+    try {
+      const res = await fetch(`/api/rooms/${currentRoom.id}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'posttest' })
+      });
+      if (res.ok) {
+        roomStateSelect.value = 'posttest';
+        roomStateSelect.className = 'control-select state-select posttest';
+      }
+    } catch (e) {
+      console.error('Failed to trigger post-test:', e);
+    }
+  });
+
+  // Export button
+  exportDataBtn.addEventListener('click', () => {
+    window.open(`/api/rooms/${currentRoom.id}/export/all`, '_blank');
+  });
+}
+
+function updateTimerDisplay() {
+  const timerText = document.getElementById('timer-text');
+  const timerDisplay = document.getElementById('timer-display');
+  if (!timerText || !timerDisplay) return;
+
+  if (!roomTimerState.durationMinutes) {
+    timerText.textContent = '--:--';
+    return;
+  }
+
+  const mins = Math.floor(roomTimerState.remainingSeconds / 60);
+  const secs = roomTimerState.remainingSeconds % 60;
+  timerText.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+  timerDisplay.classList.toggle('running', roomTimerState.running);
+
+  if (roomTimerState.remainingSeconds <= 0) {
+    timerDisplay.classList.add('expired');
+    setTimeout(() => timerDisplay.classList.remove('expired'), 3000);
+  }
+}
+
+function updateRoomTimerDisplay() {
+  const roomTimerText = document.getElementById('room-timer-text');
+  if (!roomTimerText) return;
+
+  if (!roomTimerState.durationMinutes) return;
+
+  if (roomTimerState.remainingSeconds <= 0) {
+    roomTimerText.textContent = "Time's up";
+    return;
+  }
+
+  const mins = Math.floor(roomTimerState.remainingSeconds / 60);
+  const secs = roomTimerState.remainingSeconds % 60;
+  roomTimerText.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function startTimer() {
+  if (roomTimerState.running) return;
+  roomTimerState.running = true;
+
+  roomTimerState.interval = setInterval(() => {
+    if (roomTimerState.remainingSeconds > 0) {
+      roomTimerState.remainingSeconds--;
+      updateTimerDisplay();
+      updateRoomTimerDisplay();
+    } else {
+      pauseTimer();
+    }
+  }, 1000);
+  updateTimerDisplay();
+  updateRoomTimerDisplay();
+}
+
+function pauseTimer() {
+  roomTimerState.running = false;
+  if (roomTimerState.interval) {
+    clearInterval(roomTimerState.interval);
+    roomTimerState.interval = null;
+  }
+  updateTimerDisplay();
+}
+
+function resetTimer() {
+  pauseTimer();
+  if (roomTimerState.durationMinutes) {
+    roomTimerState.remainingSeconds = roomTimerState.durationMinutes * 60;
+  }
+  updateTimerDisplay();
+  updateRoomTimerDisplay();
+}
+
+// Socket: room state changed
+socket.on('room:state-changed', ({ state }) => {
+  const select = document.getElementById('room-state-select');
+  if (select) {
+    select.value = state;
+    select.className = `control-select state-select ${state}`;
+  }
+
+  // Hide timer and pause when closed or normal
+  if (state === 'closed' || state === 'normal') {
+    const roomTimer = document.getElementById('room-timer');
+    if (roomTimer) roomTimer.style.display = 'none';
+    pauseTimer();
+    timerVisible = false;
+    const visBtn = document.getElementById('timer-visibility-btn');
+    if (visBtn) visBtn.classList.remove('active');
+  }
+});
+
+// Socket: eval mode changed
+socket.on('room:eval-mode-changed', ({ enabled }) => {
+  const btn = document.getElementById('esm-toggle-btn');
+  const text = document.getElementById('esm-toggle-text');
+  if (btn && text) {
+    btn.dataset.enabled = enabled;
+    text.textContent = enabled ? 'ON' : 'OFF';
+  }
+});
+
+// Socket: timer control (sync across clients)
+socket.on('room:timer-control', ({ action }) => {
+  const roomTimer = document.getElementById('room-timer');
+  if (action === 'start') {
+    startTimer();
+    if (roomTimer) roomTimer.style.display = 'flex';
+    timerVisible = true;
+  } else if (action === 'pause') {
+    pauseTimer();
+  } else if (action === 'reset') {
+    resetTimer();
+    if (roomTimer) roomTimer.style.display = 'none';
+    timerVisible = false;
+  } else if (action === 'show') {
+    if (roomTimer) roomTimer.style.display = 'flex';
+    timerVisible = true;
+  } else if (action === 'hide') {
+    if (roomTimer) roomTimer.style.display = 'none';
+    timerVisible = false;
+  }
+});
+
+// Socket: post-test trigger (placeholder — full modal in Step 5)
+socket.on('posttest:trigger', () => {
+  console.log('Post-test triggered');
+  alert('Post-test survey triggered. (Full modal to be implemented in Step 5.)');
+});
+
 // ========== INIT ==========
 
 loadRooms();
@@ -1875,5 +2371,6 @@ document.addEventListener('keydown', (e) => {
     cancelConnectionMode();
     cancelMergeMode();
     if (connectionsModal.classList.contains('visible')) hideConnectionsModal();
+    if (feedbackModal.classList.contains('visible')) hideFeedbackModal();
   }
 });
