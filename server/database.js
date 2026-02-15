@@ -37,7 +37,8 @@ async function initDatabase() {
     )`,
     `CREATE TABLE IF NOT EXISTS edges (
       id TEXT PRIMARY KEY, room_id TEXT NOT NULL, source_id TEXT NOT NULL, target_id TEXT NOT NULL,
-      label TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT NOT NULL
+      label TEXT DEFAULT '', directed INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS merged_nodes (
       parent_id TEXT NOT NULL, original_title TEXT NOT NULL, original_description TEXT DEFAULT '',
@@ -51,6 +52,13 @@ async function initDatabase() {
   ];
 
   tables.forEach(sql => db.run(sql));
+
+  // Migration: add directed column if missing (for existing databases)
+  const edgeCols = queryAll("PRAGMA table_info(edges)");
+  if (!edgeCols.some(c => c.name === 'directed')) {
+    db.run("ALTER TABLE edges ADD COLUMN directed INTEGER DEFAULT 1");
+  }
+
   setInterval(saveDb, 30000);
   return db;
 }

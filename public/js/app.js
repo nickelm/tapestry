@@ -51,6 +51,23 @@ function createThreadNode(prompt, parentId = null, origin = 'manual') {
   return node;
 }
 
+function getThreadMessages(threadNode) {
+  const chain = [];
+  let current = threadNode;
+  while (current) {
+    chain.unshift(current);
+    current = current.parentId ? threadMap.get(current.parentId) : null;
+  }
+  const messages = [];
+  for (const node of chain) {
+    messages.push({ role: 'user', content: node.prompt });
+    if (node.response) {
+      messages.push({ role: 'assistant', content: node.response });
+    }
+  }
+  return messages;
+}
+
 // ========== LOGIN ==========
 
 async function loadRooms() {
@@ -135,6 +152,7 @@ socket.on('joined', async ({ user, room }) => {
   // Init graph
   graph = new TapestryGraph('graph-area');
   graph.onNodeContext = showContextMenu;
+  graph.onEdgeContext = showEdgeContextMenu;
   graph.onNodeClick = handleNodeClick;
   graph.onNodeDragEnd = (id, x, y, pinned) => {
     socket.emit('move-node', { nodeId: id, x, y, pinned });
@@ -211,15 +229,31 @@ socket.on('node-upvoted', ({ id, upvotes }) => {
 });
 
 socket.on('edge-added', (edge) => {
+  edge.directed = edge.directed !== undefined ? !!edge.directed : true;
   graph.addEdge(edge);
 });
 
-socket.on('edge-label-updated', ({ id, label }) => {
+socket.on('edge-label-updated', ({ id, label, directed }) => {
   graph.updateEdgeLabel(id, label);
+  if (directed !== undefined) {
+    graph.updateEdgeDirected(id, !!directed);
+  }
 });
 
 socket.on('edge-removed', ({ id }) => {
   graph.removeEdge(id);
+});
+
+socket.on('edge-direction-flipped', ({ id, source_id, target_id }) => {
+  graph.flipEdgeDirection(id, source_id, target_id);
+});
+
+socket.on('edge-directed-toggled', ({ id, directed }) => {
+  graph.updateEdgeDirected(id, !!directed);
+});
+
+socket.on('suggest-connections', ({ nodeId, nodeTitle, suggestions }) => {
+  showConnectionsModal(nodeId, nodeTitle, suggestions);
 });
 
 socket.on('node-moved', ({ id, x, y, pinned }) => {
@@ -334,7 +368,11 @@ function sendChat(parentThreadId = null) {
   // Track which thread is awaiting a response
   activeThreadId = threadNode.id;
 
-  socket.emit('chat', { messages: chatHistory });
+  socket.emit('chat', {
+    messages: getThreadMessages(threadNode),
+    roomName: currentRoom.name,
+    breadcrumb: threadNode.breadcrumb
+  });
 }
 
 function exploreConcept(conceptTitle, conceptDescription, sourceSpan) {
@@ -361,12 +399,16 @@ function exploreConcept(conceptTitle, conceptDescription, sourceSpan) {
   // Mark source concept as explored
   sourceSpan.classList.add('explored');
 
-  // Maintain flat chatHistory for server, set active thread, send
+  // Set active thread, send thread-scoped history
   chatHistory.push({ role: 'user', content: prompt });
   activeThreadId = threadNode.id;
   chatSend.disabled = true;
   chatCancel.style.display = '';
-  socket.emit('chat', { messages: chatHistory });
+  socket.emit('chat', {
+    messages: getThreadMessages(threadNode),
+    roomName: currentRoom.name,
+    breadcrumb: threadNode.breadcrumb
+  });
 }
 
 socket.on('chat-response', ({ text, concepts }) => {
@@ -1066,7 +1108,11 @@ selectionExploreBtn.addEventListener('click', (e) => {
   activeThreadId = threadNode.id;
   chatSend.disabled = true;
   chatCancel.style.display = '';
-  socket.emit('chat', { messages: chatHistory });
+  socket.emit('chat', {
+    messages: getThreadMessages(threadNode),
+    roomName: currentRoom.name,
+    breadcrumb: threadNode.breadcrumb
+  });
 });
 
 // Dismiss toolbar on scroll
@@ -1307,6 +1353,9 @@ contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
       case 'expand':
         socket.emit('expand-node', { nodeId: contextNodeId });
         break;
+      case 'suggest-connections':
+        socket.emit('suggest-connections', { nodeId: contextNodeId });
+        break;
       case 'edit':
         showEditNodeModal(contextNodeId);
         break;
@@ -1324,6 +1373,58 @@ contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
         break;
     }
     hideContextMenu();
+  });
+});
+
+// ========== EDGE CONTEXT MENU ==========
+
+const edgeContextMenu = document.getElementById('edge-context-menu');
+let contextEdgeId = null;
+
+function showEdgeContextMenu(edgeId, x, y) {
+  contextEdgeId = edgeId;
+  hideContextMenu(); // hide node context menu if open
+  const edge = graph.edgeMap.get(edgeId);
+  if (!edge) return;
+
+  // Show/hide "Flip direction" only for directed edges
+  const flipItem = edgeContextMenu.querySelector('[data-action="flip-direction"]');
+  flipItem.style.display = edge.directed ? '' : 'none';
+
+  // Update toggle label
+  const toggleItem = edgeContextMenu.querySelector('[data-action="toggle-directed"]');
+  toggleItem.querySelector('.cm-label').textContent = edge.directed ? 'Make symmetric' : 'Make directed';
+
+  edgeContextMenu.style.left = x + 'px';
+  edgeContextMenu.style.top = y + 'px';
+  edgeContextMenu.classList.add('visible');
+}
+
+function hideEdgeContextMenu() {
+  edgeContextMenu.classList.remove('visible');
+  contextEdgeId = null;
+}
+
+document.addEventListener('click', () => hideEdgeContextMenu());
+
+edgeContextMenu.querySelectorAll('.context-menu-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const action = item.dataset.action;
+    if (!contextEdgeId) return;
+
+    switch (action) {
+      case 'flip-direction':
+        socket.emit('flip-edge-direction', { edgeId: contextEdgeId });
+        break;
+      case 'toggle-directed':
+        socket.emit('toggle-edge-directed', { edgeId: contextEdgeId });
+        break;
+      case 'delete-edge':
+        socket.emit('delete-edge', { edgeId: contextEdgeId });
+        break;
+    }
+    hideEdgeContextMenu();
   });
 });
 
@@ -1376,6 +1477,95 @@ editNodeGenerateBtn.addEventListener('click', async () => {
   editNodeDesc.value = desc || '';
   editNodeGenerateBtn.textContent = '\u2728 Generate';
   editNodeGenerateBtn.disabled = false;
+});
+
+// ========== CONNECTIONS SUGGESTION MODAL ==========
+
+let connectionsNodeId = null;
+let connectionsSuggestions = [];
+const selectedConnections = new Set();
+const connectionsModal = document.getElementById('connections-modal');
+const connectionsAddBtn = document.getElementById('connections-add');
+
+function showConnectionsModal(nodeId, nodeTitle, suggestions) {
+  connectionsNodeId = nodeId;
+  connectionsSuggestions = suggestions;
+  selectedConnections.clear();
+
+  document.getElementById('connections-concept-name').textContent =
+    `Suggested connections for "${nodeTitle}":`;
+
+  const list = document.getElementById('connections-list');
+  list.innerHTML = suggestions.map((s, i) => {
+    const dots = Array.from({ length: 5 }, (_, d) =>
+      `<span class="connections-strength-dot${d < s.strength ? ' filled' : ''}"></span>`
+    ).join('');
+
+    const desc = s.targetDescription
+      ? `<div class="connections-item-description">${escapeHtml(s.targetDescription)}</div>`
+      : '';
+
+    return `<div class="connections-item" data-index="${i}">
+      <input type="checkbox" data-index="${i}">
+      <div class="connections-item-content">
+        <div class="connections-item-header">
+          <span class="connections-item-target">${escapeHtml(s.targetTitle)}</span>
+          <span class="connections-item-label">${escapeHtml(s.label)}</span>
+          <div class="connections-item-strength">${dots}</div>
+        </div>
+        ${desc}
+      </div>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.connections-item').forEach(item => {
+    const cb = item.querySelector('input[type="checkbox"]');
+    const idx = parseInt(item.dataset.index);
+
+    item.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        item.classList.add('selected');
+        selectedConnections.add(idx);
+      } else {
+        item.classList.remove('selected');
+        selectedConnections.delete(idx);
+      }
+      connectionsAddBtn.disabled = selectedConnections.size === 0;
+    });
+  });
+
+  connectionsAddBtn.disabled = true;
+  connectionsModal.classList.add('visible');
+}
+
+function hideConnectionsModal() {
+  connectionsModal.classList.remove('visible');
+  connectionsNodeId = null;
+  connectionsSuggestions = [];
+  selectedConnections.clear();
+}
+
+connectionsAddBtn.addEventListener('click', () => {
+  if (!connectionsNodeId || selectedConnections.size === 0) return;
+  const connections = Array.from(selectedConnections).map(i => ({
+    targetId: connectionsSuggestions[i].targetId,
+    label: connectionsSuggestions[i].label,
+    directed: connectionsSuggestions[i].directed
+  }));
+  socket.emit('accept-connections', { nodeId: connectionsNodeId, connections });
+  hideConnectionsModal();
+});
+
+document.getElementById('connections-skip').addEventListener('click', hideConnectionsModal);
+
+connectionsModal.addEventListener('click', (e) => {
+  if (e.target === connectionsModal) hideConnectionsModal();
 });
 
 // ========== CONNECTION MODE ==========
@@ -1475,7 +1665,11 @@ function handleNodeDoubleClick(nodeId) {
   activeThreadId = threadNode.id;
   chatSend.disabled = true;
   chatCancel.style.display = '';
-  socket.emit('chat', { messages: chatHistory });
+  socket.emit('chat', {
+    messages: getThreadMessages(threadNode),
+    roomName: currentRoom.name,
+    breadcrumb: threadNode.breadcrumb
+  });
 
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -1677,7 +1871,9 @@ loadRooms();
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     hideContextMenu();
+    hideEdgeContextMenu();
     cancelConnectionMode();
     cancelMergeMode();
+    if (connectionsModal.classList.contains('visible')) hideConnectionsModal();
   }
 });

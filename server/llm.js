@@ -8,12 +8,17 @@ class LLMService {
     this.taskModel = 'claude-haiku-4-5-20251001';
   }
 
-  async chatWithExtraction(messages, existingConcepts = [], { signal } = {}) {
+  async chatWithExtraction(messages, existingConcepts = [], { signal, roomName, breadcrumb } = {}) {
     const existingList = existingConcepts.length > 0
       ? `\n\nExisting concepts in the shared knowledge graph (avoid duplicating these):\n${existingConcepts.map(c => `- ${c.title}: ${c.description}`).join('\n')}`
       : '';
 
-    const systemPrompt = `You are a knowledgeable assistant helping a student explore and understand concepts.
+    const roomContext = roomName ? `\nThe topic of this session is "${roomName}".` : '';
+    const breadcrumbContext = breadcrumb && breadcrumb.length > 0
+      ? `\nThe student is exploring the following path: ${breadcrumb.join(' \u2192 ')}.`
+      : '';
+
+    const systemPrompt = `You are a knowledgeable assistant helping a student explore and understand concepts.${roomContext}${breadcrumbContext}
 Respond naturally and helpfully to the student's question.
 
 After your response, you MUST include a JSON block with extracted concepts. This block must be wrapped in <concepts> tags.
@@ -63,13 +68,23 @@ Do NOT include descriptions — titles only. Be specific rather than generic.${e
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 100,
-      system: 'You generate concise relationship labels for knowledge graphs. Respond with ONLY a short phrase (2-5 words) describing how the first concept relates to the second. Examples: "enables", "is a type of", "depends on", "contrasts with", "is composed of". No punctuation, no explanation.',
+      system: 'You generate concise relationship labels for knowledge graphs. Respond ONLY with valid JSON: {"label": "...", "directed": true/false}. The label should be a short phrase (2-5 words). Set directed to true if the relationship flows from the first concept to the second (e.g., "influenced", "enables", "is a type of", "depends on"). Set directed to false if the relationship is symmetric (e.g., "contrasts with", "were contemporaries", "is similar to"). No explanation.',
       messages: [{
         role: 'user',
         content: `How does "${concept1.title}" relate to "${concept2.title}"?\n\nContext:\n- ${concept1.title}: ${concept1.description}\n- ${concept2.title}: ${concept2.description}`
       }]
     });
-    return response.content[0].text.trim();
+
+    try {
+      const parsed = JSON.parse(this._cleanJSON(response.content[0].text));
+      return {
+        label: parsed.label || 'relates to',
+        directed: parsed.directed !== false
+      };
+    } catch (e) {
+      console.error('Failed to parse relationship label:', e);
+      return { label: response.content[0].text.trim() || 'relates to', directed: true };
+    }
   }
 
   async expandConcept(concept, existingConcepts = []) {
@@ -77,12 +92,12 @@ Do NOT include descriptions — titles only. Be specific rather than generic.${e
     const response = await this.client.messages.create({
       model: this.taskModel,
       max_tokens: 500,
-      system: `You help expand knowledge graphs by suggesting related concepts. Given a concept, suggest 2-4 closely related concepts that would be valuable neighbors in a knowledge graph. Each suggestion should include a title, description, and relationship label.
+      system: `You help expand knowledge graphs by suggesting related concepts. Given a concept, suggest 2-4 closely related concepts that would be valuable neighbors in a knowledge graph. Each suggestion should include a title, description, relationship label, and whether the relationship is directed (flows from the original concept to the new one) or symmetric.
 
 Existing concepts to avoid duplicating: ${existingList}
 
 Respond ONLY with valid JSON array, no markdown fences:
-[{"title": "...", "description": "...", "relationLabel": "..."}]`,
+[{"title": "...", "description": "...", "relationLabel": "...", "directed": true/false}]`,
       messages: [{
         role: 'user',
         content: `Expand on: "${concept.title}" - ${concept.description}`
@@ -165,6 +180,46 @@ Respond ONLY with valid JSON array, no markdown fences:
     try {
       return JSON.parse(this._cleanJSON(response.content[0].text));
     } catch (e) {
+      return [];
+    }
+  }
+
+  async suggestConnections(concept, existingNodes) {
+    if (existingNodes.length === 0) return [];
+
+    const response = await this.client.messages.create({
+      model: this.taskModel,
+      max_tokens: 600,
+      system: `You analyze knowledge graphs and suggest meaningful connections between concepts. Given a concept and existing concepts in the graph, suggest the most valuable connections.
+
+For each suggested connection, provide:
+- targetId: the ID of the existing concept to connect to
+- label: a concise relationship phrase (2-5 words, e.g. "influenced", "contrasts with", "is a type of")
+- directed: true if the relationship flows from the new concept to the target, false if symmetric
+- strength: integer 1-5 (5 = strongest/most important connection)
+
+Only suggest connections that are semantically meaningful and would add value to the knowledge graph. Do not suggest vague connections like "relates to".
+
+Respond ONLY with a valid JSON array, no markdown fences:
+[{"targetId": "...", "label": "...", "directed": true/false, "strength": 5}]
+
+If no good connections exist, return [].`,
+      messages: [{
+        role: 'user',
+        content: `Concept: "${concept.title}" - ${concept.description || 'No description'}\n\nExisting concepts in the graph:\n${existingNodes.map(n => `- ID: ${n.id}, "${n.title}": ${n.description || 'No description'}`).join('\n')}`
+      }]
+    });
+
+    try {
+      const suggestions = JSON.parse(this._cleanJSON(response.content[0].text));
+      const seen = new Set();
+      return suggestions
+        .filter(s => s.targetId && s.label && s.strength >= 1 && s.strength <= 5)
+        .filter(s => { if (seen.has(s.targetId)) return false; seen.add(s.targetId); return true; })
+        .sort((a, b) => b.strength - a.strength)
+        .slice(0, 5);
+    } catch (e) {
+      console.error('Failed to parse connection suggestions:', e);
       return [];
     }
   }

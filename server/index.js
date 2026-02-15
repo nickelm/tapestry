@@ -131,7 +131,7 @@ io.on('connection', (socket) => {
     saveDb();
   });
 
-  socket.on('chat', async ({ messages }) => {
+  socket.on('chat', async ({ messages, roomName, breadcrumb }) => {
     if (!currentUser || !currentRoom) return;
 
     // Abort any previous pending request
@@ -144,7 +144,7 @@ io.on('connection', (socket) => {
 
     try {
       const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
-      const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal });
+      const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal, roomName, breadcrumb });
       if (!abortController.signal.aborted) {
         socket.emit('chat-response', result);
       }
@@ -184,12 +184,14 @@ io.on('connection', (socket) => {
       return;
     }
 
-    addNodeToRoom(title, description, currentUser, currentRoom);
+    const nodeId = addNodeToRoom(title, description, currentUser, currentRoom);
+    suggestConnectionsForNode(nodeId, title, description, currentRoom);
   });
 
-  socket.on('force-harvest', ({ title, description }) => {
+  socket.on('force-harvest', async ({ title, description }) => {
     if (!currentUser || !currentRoom) return;
-    addNodeToRoom(title, description, currentUser, currentRoom);
+    const nodeId = addNodeToRoom(title, description, currentUser, currentRoom);
+    suggestConnectionsForNode(nodeId, title, description, currentRoom);
   });
 
   function addNodeToRoom(title, description, user, roomId) {
@@ -212,6 +214,37 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('node-added', node);
     io.to(roomId).emit('activity', { user_name: user.name, action: 'harvested', target_type: 'node', target_id: nodeId, details: title, created_at: new Date().toISOString() });
     saveDb();
+    return nodeId;
+  }
+
+  async function suggestConnectionsForNode(nodeId, title, description, roomId) {
+    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ?', [roomId, nodeId]);
+    if (existing.length < 1) return;
+
+    // Filter out nodes already connected to this node
+    const connectedIds = queryAll(
+      'SELECT source_id, target_id FROM edges WHERE room_id = ? AND (source_id = ? OR target_id = ?)',
+      [roomId, nodeId, nodeId]
+    ).map(e => e.source_id === nodeId ? e.target_id : e.source_id);
+
+    const candidates = existing.filter(n => !connectedIds.includes(n.id));
+    if (candidates.length === 0) return;
+
+    try {
+      const suggestions = await llm.suggestConnections({ title, description }, candidates);
+      if (suggestions.length === 0) return;
+
+      const enriched = suggestions.map(s => {
+        const target = candidates.find(n => n.id === s.targetId);
+        return target ? { ...s, targetTitle: target.title, targetDescription: target.description } : null;
+      }).filter(Boolean);
+
+      if (enriched.length > 0) {
+        socket.emit('suggest-connections', { nodeId, nodeTitle: title, suggestions: enriched });
+      }
+    } catch (e) {
+      console.error('Auto-connection suggestion failed:', e);
+    }
   }
 
   socket.on('connect-nodes', async ({ sourceId, targetId }) => {
@@ -228,20 +261,25 @@ io.on('connection', (socket) => {
     // Immediately add edge with placeholder label for instant visual feedback
     const edgeId = uuidv4();
     const placeholder = '...';
-    run('INSERT INTO edges (id, room_id, source_id, target_id, label, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-      [edgeId, currentRoom, sourceId, targetId, placeholder, currentUser.id]);
+    run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [edgeId, currentRoom, sourceId, targetId, placeholder, 1, currentUser.id]);
 
-    io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: sourceId, target_id: targetId, label: placeholder, created_by: currentUser.id });
+    io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: sourceId, target_id: targetId, label: placeholder, directed: true, created_by: currentUser.id });
 
-    // Generate label asynchronously, then update
+    // Generate label + directionality asynchronously, then update
     let label = 'relates to';
-    try { label = await llm.generateRelationshipLabel(source, target); } catch (e) {}
+    let directed = true;
+    try {
+      const result = await llm.generateRelationshipLabel(source, target);
+      label = result.label;
+      directed = result.directed;
+    } catch (e) {}
 
-    run('UPDATE edges SET label = ? WHERE id = ?', [label, edgeId]);
+    run('UPDATE edges SET label = ?, directed = ? WHERE id = ?', [label, directed ? 1 : 0, edgeId]);
     run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [currentRoom, currentUser.id, currentUser.name, 'connected', 'edge', edgeId, `${source.title} → ${target.title}`]);
 
-    io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label });
+    io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label, directed });
     io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'connected', target_type: 'edge', target_id: edgeId, details: `${source.title} → ${target.title}: "${label}"`, created_at: new Date().toISOString() });
     saveDb();
   });
@@ -272,9 +310,10 @@ io.on('connection', (socket) => {
 
         const edgeId = uuidv4();
         const label = exp.relationLabel || 'relates to';
-        run('INSERT INTO edges (id, room_id, source_id, target_id, label, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-          [edgeId, currentRoom, nodeId, newId, label, currentUser.id]);
-        io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: nodeId, target_id: newId, label, created_by: currentUser.id });
+        const edgeDirected = exp.directed !== false;
+        run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [edgeId, currentRoom, nodeId, newId, label, edgeDirected ? 1 : 0, currentUser.id]);
+        io.to(currentRoom).emit('edge-added', { id: edgeId, source_id: nodeId, target_id: newId, label, directed: edgeDirected, created_by: currentUser.id });
       }
 
       io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'expanded', target_type: 'node', target_id: nodeId, details: `${node.title} → ${expansions.map(e => e.title).join(', ')}`, created_at: new Date().toISOString() });
@@ -283,6 +322,50 @@ io.on('connection', (socket) => {
       console.error('Expand failed:', e);
       socket.emit('error', { message: 'Failed to expand concept' });
     }
+  });
+
+  socket.on('suggest-connections', async ({ nodeId }) => {
+    if (!currentUser || !currentRoom) return;
+    const node = queryOne('SELECT * FROM nodes WHERE id = ?', [nodeId]);
+    if (!node) return;
+    suggestConnectionsForNode(nodeId, node.title, node.description, currentRoom);
+  });
+
+  socket.on('accept-connections', ({ nodeId, connections }) => {
+    if (!currentUser || !currentRoom) return;
+    if (!connections || connections.length === 0) return;
+
+    const sourceNode = queryOne('SELECT * FROM nodes WHERE id = ?', [nodeId]);
+    if (!sourceNode) return;
+
+    for (const conn of connections) {
+      const targetNode = queryOne('SELECT * FROM nodes WHERE id = ?', [conn.targetId]);
+      if (!targetNode) continue;
+
+      const exists = queryOne(
+        'SELECT id FROM edges WHERE room_id = ? AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))',
+        [currentRoom, nodeId, conn.targetId, conn.targetId, nodeId]
+      );
+      if (exists) continue;
+
+      const edgeId = uuidv4();
+      const directed = conn.directed ? 1 : 0;
+      run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [edgeId, currentRoom, nodeId, conn.targetId, conn.label, directed, currentUser.id]);
+      run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [currentRoom, currentUser.id, currentUser.name, 'connected', 'edge', edgeId, `${sourceNode.title} → ${targetNode.title}`]);
+
+      io.to(currentRoom).emit('edge-added', {
+        id: edgeId, source_id: nodeId, target_id: conn.targetId,
+        label: conn.label, directed: !!conn.directed, created_by: currentUser.id
+      });
+      io.to(currentRoom).emit('activity', {
+        user_name: currentUser.name, action: 'connected', target_type: 'edge',
+        target_id: edgeId, details: `${sourceNode.title} → ${targetNode.title}: "${conn.label}"`,
+        created_at: new Date().toISOString()
+      });
+    }
+    saveDb();
   });
 
   socket.on('elaborate-node', async ({ nodeId }) => {
@@ -401,6 +484,59 @@ io.on('connection', (socket) => {
     run('DELETE FROM edges WHERE id = ?', [edgeId]);
     io.to(currentRoom).emit('edge-removed', { id: edgeId });
     saveDb();
+  });
+
+  socket.on('flip-edge-direction', async ({ edgeId }) => {
+    if (!currentUser || !currentRoom) return;
+    const edge = queryOne('SELECT * FROM edges WHERE id = ?', [edgeId]);
+    if (!edge) return;
+
+    // Swap source and target immediately
+    run('UPDATE edges SET source_id = ?, target_id = ? WHERE id = ?', [edge.target_id, edge.source_id, edgeId]);
+    io.to(currentRoom).emit('edge-direction-flipped', { id: edgeId, source_id: edge.target_id, target_id: edge.source_id });
+    run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [currentRoom, currentUser.id, currentUser.name, 'flipped direction', 'edge', edgeId, edge.label]);
+    io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: 'flipped direction', target_type: 'edge', target_id: edgeId, details: edge.label, created_at: new Date().toISOString() });
+    saveDb();
+
+    // Re-label from new source→target perspective
+    const newSource = queryOne('SELECT * FROM nodes WHERE id = ?', [edge.target_id]);
+    const newTarget = queryOne('SELECT * FROM nodes WHERE id = ?', [edge.source_id]);
+    if (newSource && newTarget) {
+      try {
+        const result = await llm.generateRelationshipLabel(newSource, newTarget);
+        run('UPDATE edges SET label = ?, directed = ? WHERE id = ?', [result.label, result.directed ? 1 : 0, edgeId]);
+        io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label: result.label, directed: result.directed });
+        saveDb();
+      } catch (e) { console.error('Re-label after flip failed:', e); }
+    }
+  });
+
+  socket.on('toggle-edge-directed', async ({ edgeId }) => {
+    if (!currentUser || !currentRoom) return;
+    const edge = queryOne('SELECT * FROM edges WHERE id = ?', [edgeId]);
+    if (!edge) return;
+
+    // Toggle directionality immediately
+    const newDirected = edge.directed ? 0 : 1;
+    run('UPDATE edges SET directed = ? WHERE id = ?', [newDirected, edgeId]);
+    io.to(currentRoom).emit('edge-directed-toggled', { id: edgeId, directed: !!newDirected });
+    run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [currentRoom, currentUser.id, currentUser.name, newDirected ? 'set directed' : 'set symmetric', 'edge', edgeId, edge.label]);
+    io.to(currentRoom).emit('activity', { user_name: currentUser.name, action: newDirected ? 'set directed' : 'set symmetric', target_type: 'edge', target_id: edgeId, details: edge.label, created_at: new Date().toISOString() });
+    saveDb();
+
+    // Re-label with updated directionality context
+    const source = queryOne('SELECT * FROM nodes WHERE id = ?', [edge.source_id]);
+    const target = queryOne('SELECT * FROM nodes WHERE id = ?', [edge.target_id]);
+    if (source && target) {
+      try {
+        const result = await llm.generateRelationshipLabel(source, target);
+        run('UPDATE edges SET label = ?, directed = ? WHERE id = ?', [result.label, result.directed ? 1 : 0, edgeId]);
+        io.to(currentRoom).emit('edge-label-updated', { id: edgeId, label: result.label, directed: result.directed });
+        saveDb();
+      } catch (e) { console.error('Re-label after toggle failed:', e); }
+    }
   });
 
   socket.on('hover-node', ({ nodeId }) => {

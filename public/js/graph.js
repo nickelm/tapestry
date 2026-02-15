@@ -19,6 +19,7 @@ class TapestryGraph {
     this.onNodeHover = null;
     this.onNodeUnhover = null;
     this.onNodeUpvote = null;
+    this.onEdgeContext = null; // callback(edgeId, x, y)
     this.onCanvasClick = null;
 
     this.NODE_WIDTH = 180;
@@ -84,7 +85,7 @@ class TapestryGraph {
       .attr('stdDeviation', '2')
       .attr('flood-color', 'rgba(0,0,0,0.08)');
 
-    // Arrowhead
+    // Arrowhead (for directed edges)
     defs.append('marker')
       .attr('id', 'arrowhead')
       .attr('viewBox', '0 0 10 6')
@@ -94,6 +95,17 @@ class TapestryGraph {
       .append('path')
       .attr('d', 'M0,0 L10,3 L0,6 Z')
       .attr('class', 'edge-arrowhead');
+
+    // Symmetric dot (for undirected edges)
+    defs.append('marker')
+      .attr('id', 'symmetric-dot')
+      .attr('viewBox', '0 0 6 6')
+      .attr('refX', '3').attr('refY', '3')
+      .attr('markerWidth', '5').attr('markerHeight', '5')
+      .attr('orient', 'auto')
+      .append('circle')
+      .attr('cx', '3').attr('cy', '3').attr('r', '2.5')
+      .attr('class', 'edge-symmetric-dot');
 
     // Main group for zoom/pan
     this.g = this.svg.append('g').attr('class', 'graph-root');
@@ -260,11 +272,32 @@ class TapestryGraph {
 
     edgeSelection.exit().remove();
 
-    edgeSelection.enter()
+    const edgeEnter = edgeSelection.enter()
       .append('path')
-      .attr('class', 'edge-path')
-      .attr('marker-end', 'url(#arrowhead)')
-      .merge(edgeSelection);
+      .attr('class', 'edge-path');
+
+    edgeEnter.on('contextmenu', function(event, d) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (self.onEdgeContext) self.onEdgeContext(d.id, event.clientX, event.clientY);
+    });
+
+    edgeEnter.on('mouseenter', function(event, d) {
+      d3.select(this).classed('edge-hover', true);
+      self.edgeLabelGroup.selectAll('.edge-label-group')
+        .filter(e => e.id === d.id)
+        .classed('edge-label-hover', true);
+    }).on('mouseleave', function(event, d) {
+      d3.select(this).classed('edge-hover', false);
+      self.edgeLabelGroup.selectAll('.edge-label-group')
+        .filter(e => e.id === d.id)
+        .classed('edge-label-hover', false);
+    });
+
+    const mergedEdges = edgeEnter.merge(edgeSelection);
+    mergedEdges
+      .attr('marker-end', d => d.directed ? 'url(#arrowhead)' : 'url(#symmetric-dot)')
+      .attr('marker-start', d => d.directed ? null : 'url(#symmetric-dot)');
 
     // Edge labels
     const edgeLabelSel = this.edgeLabelGroup.selectAll('.edge-label-group')
@@ -275,6 +308,24 @@ class TapestryGraph {
     const edgeLabelEnter = edgeLabelSel.enter()
       .append('g')
       .attr('class', 'edge-label-group');
+
+    edgeLabelEnter.on('contextmenu', function(event, d) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (self.onEdgeContext) self.onEdgeContext(d.id, event.clientX, event.clientY);
+    });
+
+    edgeLabelEnter.on('mouseenter', function(event, d) {
+      d3.select(this).classed('edge-label-hover', true);
+      self.edgeGroup.selectAll('.edge-path')
+        .filter(e => e.id === d.id)
+        .classed('edge-hover', true);
+    }).on('mouseleave', function(event, d) {
+      d3.select(this).classed('edge-label-hover', false);
+      self.edgeGroup.selectAll('.edge-path')
+        .filter(e => e.id === d.id)
+        .classed('edge-hover', false);
+    });
 
     edgeLabelEnter.append('rect')
       .attr('fill', '#fafafa')
@@ -582,6 +633,24 @@ class TapestryGraph {
     }
   }
 
+  updateEdgeDirected(edgeId, directed) {
+    const edge = this.edgeMap.get(edgeId);
+    if (edge) {
+      edge.directed = directed;
+      this.render(false);
+    }
+  }
+
+  flipEdgeDirection(edgeId, newSourceId, newTargetId) {
+    const edge = this.edgeMap.get(edgeId);
+    if (edge) {
+      edge.source_id = newSourceId;
+      edge.target_id = newTargetId;
+      this.render(false);
+      this._tick(); // Force visual update of edge paths
+    }
+  }
+
   removeEdge(edgeId) {
     this.edges = this.edges.filter(e => e.id !== edgeId);
     this.edgeMap.delete(edgeId);
@@ -703,7 +772,7 @@ class TapestryGraph {
     });
     this.nodeMap = new Map(this.nodes.map(n => [n.id, n]));
 
-    this.edges = state.edges || [];
+    this.edges = (state.edges || []).map(e => ({ ...e, directed: !!e.directed }));
     this.edgeMap = new Map(this.edges.map(e => [e.id, e]));
 
     this.render();

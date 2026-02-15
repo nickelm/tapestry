@@ -103,6 +103,9 @@
     <div class="context-menu-item" data-action="expand">
       <span class="cm-icon">↗</span> Expand (show related)
     </div>
+    <div class="context-menu-item" data-action="suggest-connections">
+      <span class="cm-icon">⚡</span> Suggest connections
+    </div>
     <div class="context-menu-item" data-action="edit">
       <span class="cm-icon">&#9998;</span> Edit
     </div>
@@ -119,6 +122,20 @@
     <div class="context-menu-separator"></div>
     <div class="context-menu-item danger" data-action="prune">
       <span class="cm-icon">✕</span> Prune
+    </div>
+  </div>
+
+  <!-- Edge Context Menu -->
+  <div class="context-menu" id="edge-context-menu">
+    <div class="context-menu-item" data-action="flip-direction">
+      <span class="cm-icon">&#8634;</span> <span class="cm-label">Flip direction</span>
+    </div>
+    <div class="context-menu-item" data-action="toggle-directed">
+      <span class="cm-icon">&#8596;</span> <span class="cm-label">Make symmetric</span>
+    </div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item danger" data-action="delete-edge">
+      <span class="cm-icon">&#10005;</span> <span class="cm-label">Delete connection</span>
     </div>
   </div>
 
@@ -149,6 +166,19 @@
       <div class="modal-actions">
         <button id="edit-node-cancel">Cancel</button>
         <button id="edit-node-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Suggest Connections Modal -->
+  <div class="modal-overlay" id="connections-modal">
+    <div class="modal-card">
+      <h3>Suggested connections</h3>
+      <p id="connections-concept-name"></p>
+      <div id="connections-list"></div>
+      <div class="modal-actions">
+        <button id="connections-skip">Skip</button>
+        <button id="connections-add" class="primary" disabled>Add selected</button>
       </div>
     </div>
   </div>
