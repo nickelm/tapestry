@@ -139,6 +139,7 @@
       <div class="graph-toolbar">
         <button id="btn-fit-view" title="Fit view">⊞ Fit view</button>
         <button id="btn-auto-layout" title="Auto layout">⊟ Auto layout</button>
+        <button id="btn-export-svg" title="Export as SVG">⤓ Export SVG</button>
       </div>
 
       <svg id="graph-svg"></svg>
@@ -206,6 +207,13 @@
     <div class="context-menu-separator"></div>
     <div class="context-menu-item danger" data-action="delete-edge">
       <span class="cm-icon">&#10005;</span> <span class="cm-label">Delete connection</span>
+    </div>
+  </div>
+
+  <!-- Canvas Context Menu -->
+  <div class="context-menu" id="canvas-context-menu">
+    <div class="context-menu-item" data-action="export-svg">
+      <span class="cm-icon">⤓</span> <span class="cm-label">Export as SVG</span>
     </div>
   </div>
 

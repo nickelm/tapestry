@@ -1626,6 +1626,38 @@ edgeContextMenu.querySelectorAll('.context-menu-item').forEach(item => {
   });
 });
 
+// ========== CANVAS CONTEXT MENU ==========
+
+const canvasContextMenu = document.getElementById('canvas-context-menu');
+
+function showCanvasContextMenu(x, y) {
+  hideContextMenu();
+  hideEdgeContextMenu();
+  canvasContextMenu.style.left = x + 'px';
+  canvasContextMenu.style.top = y + 'px';
+  canvasContextMenu.classList.add('visible');
+}
+
+function hideCanvasContextMenu() {
+  canvasContextMenu.classList.remove('visible');
+}
+
+document.addEventListener('click', () => hideCanvasContextMenu());
+
+canvasContextMenu.querySelectorAll('.context-menu-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const action = item.dataset.action;
+    if (action === 'export-svg') triggerExportSVG();
+    hideCanvasContextMenu();
+  });
+});
+
+document.getElementById('graph-svg').addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  showCanvasContextMenu(event.clientX, event.clientY);
+});
+
 // ========== EDIT NODE MODAL ==========
 
 let editingNodeId = null;
@@ -1880,6 +1912,28 @@ document.getElementById('btn-fit-view').addEventListener('click', () => {
 
 document.getElementById('btn-auto-layout').addEventListener('click', () => {
   if (graph) graph.autoLayout();
+});
+
+function triggerExportSVG() {
+  if (!graph) return;
+  const result = graph.exportSVG({
+    roomName: currentRoom ? currentRoom.name : 'tapestry-graph',
+    includeMetadata: true
+  });
+  if (result && !result.success && result.reason === 'empty') {
+    showToast('Nothing to export — the graph is empty');
+  } else if (result && result.success) {
+    showToast('SVG exported');
+  }
+}
+
+document.getElementById('btn-export-svg').addEventListener('click', triggerExportSVG);
+
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'E') {
+    e.preventDefault();
+    triggerExportSVG();
+  }
 });
 
 // ========== PANEL TOGGLES ==========
@@ -2774,6 +2828,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     hideContextMenu();
     hideEdgeContextMenu();
+    hideCanvasContextMenu();
     cancelConnectionMode();
     cancelMergeMode();
     if (connectionsModal.classList.contains('visible')) hideConnectionsModal();

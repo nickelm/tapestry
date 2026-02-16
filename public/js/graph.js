@@ -755,6 +755,148 @@ class TapestryGraph {
     setTimeout(() => this.fitView(), 1500);
   }
 
+  exportSVG({ roomName, includeMetadata = true } = {}) {
+    if (this.nodes.length === 0) {
+      return { success: false, reason: 'empty' };
+    }
+
+    // Deep clone the live SVG
+    const clone = this.svg.node().cloneNode(true);
+
+    // Strip interactive and transient elements
+    ['.node-upvote-btn', '.presence-indicator', '.rubberband-line'].forEach(sel => {
+      clone.querySelectorAll(sel).forEach(el => el.remove());
+    });
+
+    // Remove transient CSS state classes
+    clone.querySelectorAll('.node-card.selected').forEach(el => el.classList.remove('selected'));
+    clone.querySelectorAll('.node-card.node-highlight-pulse').forEach(el => el.classList.remove('node-highlight-pulse'));
+    clone.querySelectorAll('.edge-path.edge-hover').forEach(el => el.classList.remove('edge-hover'));
+    clone.querySelectorAll('.edge-label-group.edge-label-hover').forEach(el => el.classList.remove('edge-label-hover'));
+
+    // Reset graph-root transform (viewBox handles framing)
+    const graphRoot = clone.querySelector('.graph-root');
+    if (graphRoot) graphRoot.removeAttribute('transform');
+
+    // Compute tight bounding box from node data
+    const padding = 60;
+    const xs = this.nodes.map(n => n.x);
+    const ys = this.nodes.map(n => n.y);
+    let minX = Math.min(...xs) - this.NODE_WIDTH / 2 - padding;
+    let minY = Math.min(...ys) - this.NODE_HEIGHT / 2 - padding - 14; // upvote badge overhead
+    let maxX = Math.max(...xs) + this.NODE_WIDTH / 2 + padding;
+    let maxY = Math.max(...ys) + this.NODE_HEIGHT / 2 + padding + 16; // contributor dots below
+    let width = maxX - minX;
+    let height = maxY - minY;
+
+    // Resolve CSS custom properties for inline attribute application
+    const rootStyles = getComputedStyle(document.documentElement);
+    const cssVars = {};
+    ['--bg', '--surface', '--border', '--border-light', '--text', '--text-secondary', '--text-muted', '--accent', '--accent-light'].forEach(v => {
+      cssVars[v] = rootStyles.getPropertyValue(v).trim();
+    });
+
+    // Apply styles as inline presentation attributes for maximum compatibility
+    // (Inkscape and other SVG editors have limited CSS class support)
+    const inlineStyles = {
+      '.node-card': { fill: cssVars['--surface'], stroke: cssVars['--border'], 'stroke-width': '1', rx: '6', ry: '6', filter: 'url(#dropShadow)' },
+      '.node-title': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '13px', 'font-weight': '500', fill: cssVars['--text'] },
+      '.node-description': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '11px', fill: cssVars['--text-secondary'] },
+      '.node-upvote-badge': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '11px', 'font-weight': '600' },
+      '.node-contributor-dot': { stroke: cssVars['--surface'], 'stroke-width': '1.5' },
+      '.node-stack-card': { fill: '#f8fafc', stroke: cssVars['--border'], 'stroke-width': '0.5', rx: '6', ry: '6' },
+      '.edge-path': { fill: 'none', stroke: cssVars['--border'], 'stroke-width': '1.2' },
+      '.edge-label': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '10px', fill: cssVars['--text-muted'] },
+      '.edge-arrowhead': { fill: cssVars['--border'] },
+      '.edge-symmetric-dot': { fill: cssVars['--border'] },
+    };
+    for (const [selector, attrs] of Object.entries(inlineStyles)) {
+      clone.querySelectorAll(selector).forEach(el => {
+        for (const [attr, value] of Object.entries(attrs)) {
+          el.setAttribute(attr, value);
+        }
+      });
+    }
+
+    // Replace feDropShadow (SVG2) with SVG 1.1 filter primitives for Inkscape compatibility
+    const oldFilter = clone.querySelector('#dropShadow');
+    if (oldFilter) {
+      oldFilter.innerHTML = '';
+      const ns = 'http://www.w3.org/2000/svg';
+      const blur = document.createElementNS(ns, 'feGaussianBlur');
+      blur.setAttribute('in', 'SourceAlpha');
+      blur.setAttribute('stdDeviation', '2');
+      blur.setAttribute('result', 'blur');
+      const offset = document.createElementNS(ns, 'feOffset');
+      offset.setAttribute('in', 'blur');
+      offset.setAttribute('dx', '0');
+      offset.setAttribute('dy', '1');
+      offset.setAttribute('result', 'offsetBlur');
+      const flood = document.createElementNS(ns, 'feFlood');
+      flood.setAttribute('flood-color', '#000000');
+      flood.setAttribute('flood-opacity', '0.08');
+      flood.setAttribute('result', 'color');
+      const comp = document.createElementNS(ns, 'feComposite');
+      comp.setAttribute('in', 'color');
+      comp.setAttribute('in2', 'offsetBlur');
+      comp.setAttribute('operator', 'in');
+      comp.setAttribute('result', 'shadow');
+      const merge = document.createElementNS(ns, 'feMerge');
+      const mn1 = document.createElementNS(ns, 'feMergeNode');
+      mn1.setAttribute('in', 'shadow');
+      const mn2 = document.createElementNS(ns, 'feMergeNode');
+      mn2.setAttribute('in', 'SourceGraphic');
+      merge.appendChild(mn1);
+      merge.appendChild(mn2);
+      oldFilter.appendChild(blur);
+      oldFilter.appendChild(offset);
+      oldFilter.appendChild(flood);
+      oldFilter.appendChild(comp);
+      oldFilter.appendChild(merge);
+    }
+
+    // Optional metadata text
+    if (includeMetadata) {
+      const metaText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      metaText.setAttribute('x', minX + 10);
+      metaText.setAttribute('y', minY + height - 8);
+      metaText.setAttribute('font-family', "'IBM Plex Sans', sans-serif");
+      metaText.setAttribute('font-size', '10');
+      metaText.setAttribute('fill', cssVars['--text-muted']);
+      const dateStr = new Date().toISOString().slice(0, 10);
+      metaText.textContent = `${roomName || 'Tapestry'} — ${dateStr} — ${this.nodes.length} concepts, ${this.edges.length} connections`;
+      graphRoot.appendChild(metaText);
+    }
+
+    // Set viewBox and dimensions
+    clone.setAttribute('viewBox', `${minX} ${minY} ${width} ${height}`);
+    clone.setAttribute('width', width);
+    clone.setAttribute('height', height);
+    clone.removeAttribute('style');
+
+    // XML namespaces
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
+    // Serialize and download
+    const serializer = new XMLSerializer();
+    let svgString = '<?xml version="1.0" encoding="UTF-8"?>\n' + serializer.serializeToString(clone);
+
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = (roomName || 'tapestry-graph').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const dateStr = new Date().toISOString().slice(0, 10);
+    a.download = `tapestry-${safeName}-${dateStr}.svg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    return { success: true };
+  }
+
   loadState(state) {
     this.nodes = state.nodes.map(n => {
       const node = { ...n, pinned: !!n.pinned };

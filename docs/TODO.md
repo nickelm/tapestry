@@ -7,6 +7,7 @@
 * Search to filter on the workspace
 * Persistent login(?)
 * Upvote should become downvote in context menu if you have used it
+* Refactoring - code is fairly messy and in only a few files
 
 # Completed
 
