@@ -82,8 +82,8 @@ class TapestryGraph {
       .attr('width', '140%').attr('height', '140%');
     filter.append('feDropShadow')
       .attr('dx', '0').attr('dy', '1')
-      .attr('stdDeviation', '2')
-      .attr('flood-color', 'rgba(0,0,0,0.08)');
+      .attr('stdDeviation', '3')
+      .attr('flood-color', 'rgba(0,0,0,0.18)');
 
     // Arrowhead (for directed edges)
     defs.append('marker')
@@ -329,8 +329,8 @@ class TapestryGraph {
 
     edgeLabelEnter.append('rect')
       .attr('fill', '#fafafa')
-      .attr('stroke', '#e2e8f0')
-      .attr('stroke-width', 0.8)
+      .attr('stroke', '#b0bec5')
+      .attr('stroke-width', 1)
       .attr('rx', 3).attr('ry', 3)
       .attr('opacity', 0.95);
 
@@ -799,16 +799,16 @@ class TapestryGraph {
     // Apply styles as inline presentation attributes for maximum compatibility
     // (Inkscape and other SVG editors have limited CSS class support)
     const inlineStyles = {
-      '.node-card': { fill: cssVars['--surface'], stroke: cssVars['--border'], 'stroke-width': '1', rx: '6', ry: '6', filter: 'url(#dropShadow)' },
+      '.node-card': { fill: cssVars['--surface'], stroke: cssVars['--border'], 'stroke-width': '1.5', rx: '6', ry: '6', filter: 'url(#dropShadow)' },
       '.node-title': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '13px', 'font-weight': '500', fill: cssVars['--text'] },
       '.node-description': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '11px', fill: cssVars['--text-secondary'] },
       '.node-upvote-badge': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '11px', 'font-weight': '600' },
       '.node-contributor-dot': { stroke: cssVars['--surface'], 'stroke-width': '1.5' },
-      '.node-stack-card': { fill: '#f8fafc', stroke: cssVars['--border'], 'stroke-width': '0.5', rx: '6', ry: '6' },
-      '.edge-path': { fill: 'none', stroke: cssVars['--border'], 'stroke-width': '1.2' },
-      '.edge-label': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '10px', fill: cssVars['--text-muted'] },
-      '.edge-arrowhead': { fill: cssVars['--border'] },
-      '.edge-symmetric-dot': { fill: cssVars['--border'] },
+      '.node-stack-card': { fill: '#f8fafc', stroke: cssVars['--border'], 'stroke-width': '1', rx: '6', ry: '6' },
+      '.edge-path': { fill: 'none', stroke: cssVars['--border'], 'stroke-width': '1.8' },
+      '.edge-label': { 'font-family': "'IBM Plex Sans', sans-serif", 'font-size': '10px', fill: cssVars['--text-secondary'] },
+      '.edge-arrowhead': { fill: cssVars['--text-muted'] },
+      '.edge-symmetric-dot': { fill: cssVars['--text-muted'] },
     };
     for (const [selector, attrs] of Object.entries(inlineStyles)) {
       clone.querySelectorAll(selector).forEach(el => {
@@ -825,7 +825,7 @@ class TapestryGraph {
       const ns = 'http://www.w3.org/2000/svg';
       const blur = document.createElementNS(ns, 'feGaussianBlur');
       blur.setAttribute('in', 'SourceAlpha');
-      blur.setAttribute('stdDeviation', '2');
+      blur.setAttribute('stdDeviation', '3');
       blur.setAttribute('result', 'blur');
       const offset = document.createElementNS(ns, 'feOffset');
       offset.setAttribute('in', 'blur');
@@ -834,7 +834,7 @@ class TapestryGraph {
       offset.setAttribute('result', 'offsetBlur');
       const flood = document.createElementNS(ns, 'feFlood');
       flood.setAttribute('flood-color', '#000000');
-      flood.setAttribute('flood-opacity', '0.08');
+      flood.setAttribute('flood-opacity', '0.18');
       flood.setAttribute('result', 'color');
       const comp = document.createElementNS(ns, 'feComposite');
       comp.setAttribute('in', 'color');
