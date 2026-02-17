@@ -1,5 +1,26 @@
 // graph.js — D3 force-directed graph with rectilinear edges
 
+// Custom gravity force: pulls nodes toward center with strength proportional to distance.
+// Replaces d3.forceCenter which only shifts center-of-mass.
+function forceGravity(center, strength) {
+  let nodes;
+  function force(alpha) {
+    for (const node of nodes) {
+      if (node.fx != null || node.fy != null) continue;
+      const dx = center.x - node.x;
+      const dy = center.y - node.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        const k = strength * alpha * dist * 0.01;
+        node.vx += dx / dist * k;
+        node.vy += dy / dist * k;
+      }
+    }
+  }
+  force.initialize = (n) => { nodes = n; };
+  return force;
+}
+
 class TapestryGraph {
   constructor(containerId) {
     this.container = document.getElementById(containerId);
@@ -133,10 +154,18 @@ class TapestryGraph {
 
   _initSimulation() {
     this.simulation = d3.forceSimulation()
-      .force('link', d3.forceLink().id(d => d.id).distance(200).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(-300))
-      .force('collision', d3.forceCollide().radius(d => Math.max(this.NODE_WIDTH, this.NODE_HEIGHT) / 2 + 20))
-      .force('center', d3.forceCenter(0, 0).strength(0.05))
+      .force('link', d3.forceLink().id(d => d.id)
+        .distance(60)
+        .strength(1.5)
+        .iterations(2))
+      .force('charge', d3.forceManyBody()
+        .strength(-150)
+        .distanceMax(300))
+      .force('collision', d3.forceCollide()
+        .radius(d => Math.max(this.NODE_WIDTH, this.NODE_HEIGHT) / 2 + 8)
+        .strength(0.7)
+        .iterations(2))
+      .force('gravity', forceGravity({ x: 0, y: 0 }, 0.5))
       .on('tick', () => this._tick());
   }
 
@@ -207,6 +236,16 @@ class TapestryGraph {
   }
 
   _tick() {
+    // Bounding box clamp — keep unpinned nodes within ±1.5× viewport
+    const bw = this.width * 1.5;
+    const bh = this.height * 1.5;
+    const pad = 50;
+    for (const node of this.nodes) {
+      if (node.fx != null) continue;
+      node.x = Math.max(-bw + pad, Math.min(bw - pad, node.x));
+      node.y = Math.max(-bh + pad, Math.min(bh - pad, node.y));
+    }
+
     // Update node positions
     this.nodeGroup.selectAll('.node-group')
       .attr('transform', d => `translate(${d.x - this.NODE_WIDTH/2}, ${d.y - this.NODE_HEIGHT/2})`);
