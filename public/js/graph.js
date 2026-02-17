@@ -21,6 +21,7 @@ class TapestryGraph {
     this.onNodeUpvote = null;
     this.onEdgeContext = null; // callback(edgeId, x, y)
     this.onCanvasClick = null;
+    this._mergeMode = false;
 
     this.NODE_WIDTH = 180;
     this.NODE_HEIGHT = 52;
@@ -262,6 +263,76 @@ class TapestryGraph {
     return d.charAt(0).toLowerCase() + d.slice(1);
   }
 
+  // --- Highlight / Dim helpers (F11) ---
+
+  _getEdgeEndpoints(edge) {
+    const sourceId = edge.source_id || (edge.source && edge.source.id) || edge.source;
+    const targetId = edge.target_id || (edge.target && edge.target.id) || edge.target;
+    return { sourceId, targetId };
+  }
+
+  _getNeighbors(nodeId) {
+    const neighborIds = new Set();
+    const edgeIds = new Set();
+    for (const edge of this.edges) {
+      const { sourceId, targetId } = this._getEdgeEndpoints(edge);
+      if (sourceId === nodeId) {
+        neighborIds.add(targetId);
+        edgeIds.add(edge.id);
+      } else if (targetId === nodeId) {
+        neighborIds.add(sourceId);
+        edgeIds.add(edge.id);
+      }
+    }
+    return { neighborIds, edgeIds };
+  }
+
+  _highlightNode(nodeId) {
+    const { neighborIds, edgeIds } = this._getNeighbors(nodeId);
+    const keepNodes = new Set([nodeId, ...neighborIds]);
+
+    this.nodeGroup.selectAll('.node-group')
+      .classed('dimmed', d => !keepNodes.has(d.id));
+    this.edgeGroup.selectAll('.edge-path')
+      .classed('dimmed', d => !edgeIds.has(d.id));
+    this.edgeLabelGroup.selectAll('.edge-label-group')
+      .classed('dimmed', d => !edgeIds.has(d.id));
+  }
+
+  _highlightEdge(edgeId) {
+    const edge = this.edgeMap.get(edgeId);
+    if (!edge) return;
+
+    const { sourceId, targetId } = this._getEdgeEndpoints(edge);
+    const keepNodes = new Set([sourceId, targetId]);
+
+    // Z-reorder (permanent): raise edge path and label group
+    this.edgeGroup.selectAll('.edge-path')
+      .filter(d => d.id === edgeId).raise();
+    this.edgeLabelGroup.selectAll('.edge-label-group')
+      .filter(d => d.id === edgeId).raise();
+
+    // Highlight the hovered edge
+    this.edgeGroup.selectAll('.edge-path')
+      .filter(d => d.id === edgeId).classed('edge-highlighted', true);
+    this.edgeLabelGroup.selectAll('.edge-label-group')
+      .filter(d => d.id === edgeId).classed('edge-highlighted', true);
+
+    // Dim everything else
+    this.nodeGroup.selectAll('.node-group')
+      .classed('dimmed', d => !keepNodes.has(d.id));
+    this.edgeGroup.selectAll('.edge-path')
+      .classed('dimmed', d => d.id !== edgeId);
+    this.edgeLabelGroup.selectAll('.edge-label-group')
+      .classed('dimmed', d => d.id !== edgeId);
+  }
+
+  _clearHighlight() {
+    this.nodeGroup.selectAll('.node-group').classed('dimmed', false);
+    this.edgeGroup.selectAll('.edge-path').classed('dimmed', false).classed('edge-highlighted', false);
+    this.edgeLabelGroup.selectAll('.edge-label-group').classed('dimmed', false).classed('edge-highlighted', false);
+  }
+
   // --- Render ---
   render(restartSimulation = true) {
     const self = this;
@@ -287,11 +358,13 @@ class TapestryGraph {
       self.edgeLabelGroup.selectAll('.edge-label-group')
         .filter(e => e.id === d.id)
         .classed('edge-label-hover', true);
+      if (!self._rubberbandSourceId && !self._mergeMode) self._highlightEdge(d.id);
     }).on('mouseleave', function(event, d) {
       d3.select(this).classed('edge-hover', false);
       self.edgeLabelGroup.selectAll('.edge-label-group')
         .filter(e => e.id === d.id)
         .classed('edge-label-hover', false);
+      if (!self._rubberbandSourceId && !self._mergeMode) self._clearHighlight();
     });
 
     const mergedEdges = edgeEnter.merge(edgeSelection);
@@ -320,11 +393,13 @@ class TapestryGraph {
       self.edgeGroup.selectAll('.edge-path')
         .filter(e => e.id === d.id)
         .classed('edge-hover', true);
+      if (!self._rubberbandSourceId && !self._mergeMode) self._highlightEdge(d.id);
     }).on('mouseleave', function(event, d) {
       d3.select(this).classed('edge-label-hover', false);
       self.edgeGroup.selectAll('.edge-path')
         .filter(e => e.id === d.id)
         .classed('edge-hover', false);
+      if (!self._rubberbandSourceId && !self._mergeMode) self._clearHighlight();
     });
 
     edgeLabelEnter.append('rect')
@@ -497,11 +572,13 @@ class TapestryGraph {
     // Hover
     nodeEnter.on('mouseenter', function(event, d) {
       self._showTooltip(d.id, event);
+      if (!self._rubberbandSourceId && !self._mergeMode) self._highlightNode(d.id);
       if (self.onNodeHover) self.onNodeHover(d.id);
     }).on('mousemove.tooltip', function(event, d) {
       if (self._tooltip.classList.contains('visible')) self._positionTooltip(event);
     }).on('mouseleave', function(event, d) {
       self._hideTooltip();
+      if (!self._rubberbandSourceId && !self._mergeMode) self._clearHighlight();
       if (self.onNodeUnhover) self.onNodeUnhover(d.id);
     });
 
@@ -773,6 +850,8 @@ class TapestryGraph {
     clone.querySelectorAll('.node-card.node-highlight-pulse').forEach(el => el.classList.remove('node-highlight-pulse'));
     clone.querySelectorAll('.edge-path.edge-hover').forEach(el => el.classList.remove('edge-hover'));
     clone.querySelectorAll('.edge-label-group.edge-label-hover').forEach(el => el.classList.remove('edge-label-hover'));
+    clone.querySelectorAll('.dimmed').forEach(el => el.classList.remove('dimmed'));
+    clone.querySelectorAll('.edge-highlighted').forEach(el => el.classList.remove('edge-highlighted'));
 
     // Reset graph-root transform (viewBox handles framing)
     const graphRoot = clone.querySelector('.graph-root');

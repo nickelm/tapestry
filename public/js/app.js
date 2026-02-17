@@ -1821,12 +1821,14 @@ document.getElementById('cancel-connect').addEventListener('click', cancelConnec
 function startMergeMode(sourceId) {
   mergeSourceId = sourceId;
   graph.setSelected(sourceId);
+  graph._mergeMode = true;
   document.getElementById('merge-banner').classList.add('visible');
 }
 
 function cancelMergeMode() {
   mergeSourceId = null;
   graph.setSelected(null);
+  graph._mergeMode = false;
   document.getElementById('merge-banner').classList.remove('visible');
 }
 

@@ -1520,6 +1520,40 @@ body:has(.admin-control-strip:not(.hidden)) #app-screen {
   pointer-events: none;
 }
 
+/* --- HOVER HIGHLIGHTING & DIMMING (F11) --- */
+.node-group,
+.edge-path,
+.edge-label-group {
+  transition: opacity 150ms ease-out;
+}
+
+.node-group.dimmed {
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.edge-path.dimmed {
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.edge-label-group.dimmed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.edge-path.edge-highlighted {
+  stroke: #2563eb;
+  stroke-width: 2.5;
+}
+
+.edge-label-group.edge-highlighted rect {
+  fill: #dbeafe;
+  stroke: #2563eb;
+  stroke-width: 1;
+  opacity: 1;
+}
+
 /* --- CONTEXT MENU --- */
 .context-menu {
   display: none;
