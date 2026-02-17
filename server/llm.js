@@ -170,12 +170,25 @@ Respond ONLY with valid JSON array, no markdown fences:
   }
 
   async findSimilarConcepts(newConcept, existingConcepts, { roomName, roomSummary } = {}) {
-    if (existingConcepts.length === 0) return [];
+    if (existingConcepts.length === 0) return { duplicates: [], related: [], broader: [] };
 
     const response = await this.client.messages.create({
       model: this.taskModel,
-      max_tokens: 200,
-      system: `You identify similar concepts in a knowledge graph.${this._buildRoomContext(roomName, roomSummary)} Given a new concept and a list of existing concepts, return the IDs of any existing concepts that are semantically very similar or overlapping. Respond ONLY with a JSON array of IDs, e.g. ["id1", "id2"]. If none are similar, respond with [].`,
+      max_tokens: 500,
+      system: `You classify how a new concept relates to existing concepts in a knowledge graph.${this._buildRoomContext(roomName, roomSummary)}
+
+Given a new concept and a list of existing concepts, classify each relevant existing concept into one of three categories:
+
+1. duplicates: The existing concept is essentially the SAME concept, just worded differently. These are merge candidates. Be CONSERVATIVE: two things of the same type (e.g., two different aircraft, two different philosophers, two different algorithms) are RELATED, not duplicates. Only flag as duplicate if they truly refer to the same specific idea or entity.
+
+2. related: The existing concept is distinct but thematically close — a sibling concept, a complementary idea, or something in the same domain. NOT a duplicate.
+
+3. broader: The existing concept is a parent category, generalization, or umbrella topic that encompasses the new concept.
+
+Respond ONLY with valid JSON, no markdown fences:
+{"duplicates": [{"id": "...", "reason": "why this is the same concept"}], "related": [{"id": "...", "relationship": "how they relate"}], "broader": [{"id": "...", "relationship": "how the new concept fits under this"}]}
+
+If no concepts match a category, use an empty array. Only include genuinely relevant concepts.`,
       messages: [{
         role: 'user',
         content: `New concept: "${newConcept.title}" - ${newConcept.description}\n\nExisting concepts:\n${existingConcepts.map(c => `- ID: ${c.id}, "${c.title}": ${c.description}`).join('\n')}`
@@ -183,9 +196,14 @@ Respond ONLY with valid JSON array, no markdown fences:
     });
 
     try {
-      return JSON.parse(this._cleanJSON(response.content[0].text));
+      const result = JSON.parse(this._cleanJSON(response.content[0].text));
+      return {
+        duplicates: Array.isArray(result.duplicates) ? result.duplicates : [],
+        related: Array.isArray(result.related) ? result.related : [],
+        broader: Array.isArray(result.broader) ? result.broader : []
+      };
     } catch (e) {
-      return [];
+      return { duplicates: [], related: [], broader: [] };
     }
   }
 

@@ -12,6 +12,7 @@ let activeThreadId = null;
 let connectionSourceId = null;
 let mergeSourceId = null;
 let pendingHarvest = null;
+let pendingHarvestExtra = null; // stores {related, broader} during duplicate modal
 let selectedRoomId = null;
 let myUpvotes = new Set();
 let graphTitleMap = new Map(); // lowercase title -> nodeId (F10: shared graph awareness)
@@ -1481,17 +1482,21 @@ function removeThreadSection(threadNode) {
 
 // ========== SIMILAR CONCEPTS MODAL ==========
 
-socket.on('similar-found', ({ newConcept, similar }) => {
+socket.on('similar-found', ({ newConcept, duplicates, related, broader }) => {
   pendingHarvest = newConcept;
+  pendingHarvestExtra = { related: related || [], broader: broader || [] };
+
   const modal = document.getElementById('similar-modal');
+  document.getElementById('similar-modal-heading').textContent = 'Possible duplicates found';
   document.getElementById('similar-new-concept').textContent =
-    `"${newConcept.title}" seems similar to existing concepts:`;
+    `"${newConcept.title}" may already exist in the graph:`;
 
   const list = document.getElementById('similar-list');
-  list.innerHTML = similar.map(s =>
+  list.innerHTML = duplicates.map(s =>
     `<div class="similar-item">
       <div class="similar-title">${escapeHtml(s.title)}</div>
       <div class="similar-desc">${escapeHtml(s.description)}</div>
+      ${s.reason ? `<div class="similar-reason">${escapeHtml(s.reason)}</div>` : ''}
     </div>`
   ).join('');
 
@@ -1500,15 +1505,35 @@ socket.on('similar-found', ({ newConcept, similar }) => {
 
 document.getElementById('similar-add-anyway').addEventListener('click', () => {
   if (pendingHarvest) {
-    socket.emit('force-harvest', pendingHarvest);
+    const extra = pendingHarvestExtra || { related: [], broader: [] };
+    socket.emit('force-harvest', {
+      ...pendingHarvest,
+      broader: extra.broader
+    });
+
+    // Show toast about related concepts
+    if (extra.related.length > 0) {
+      showToast(`${extra.related.length} related concept${extra.related.length !== 1 ? 's' : ''} already in graph`);
+    }
+
     pendingHarvest = null;
+    pendingHarvestExtra = null;
   }
   document.getElementById('similar-modal').classList.remove('visible');
 });
 
 document.getElementById('similar-cancel').addEventListener('click', () => {
   pendingHarvest = null;
+  pendingHarvestExtra = null;
   document.getElementById('similar-modal').classList.remove('visible');
+});
+
+// ========== HARVEST INFO (non-blocking related concepts indicator) ==========
+
+socket.on('harvest-info', ({ relatedCount }) => {
+  if (relatedCount > 0) {
+    showToast(`${relatedCount} related concept${relatedCount !== 1 ? 's' : ''} already in graph`);
+  }
 });
 
 // ========== CONTEXT MENU ==========
@@ -2044,6 +2069,7 @@ socket.on('left-room', () => {
   connectionSourceId = null;
   mergeSourceId = null;
   pendingHarvest = null;
+  pendingHarvestExtra = null;
   selectedRoomId = null;
   myUpvotes = new Set();
   graphTitleMap = new Map();

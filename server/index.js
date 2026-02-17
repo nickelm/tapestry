@@ -560,25 +560,102 @@ io.on('connection', (socket) => {
 
     const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
 
-    let similarIds = [];
+    let classification = { duplicates: [], related: [], broader: [] };
     if (existing.length > 0) {
-      try { similarIds = await llm.findSimilarConcepts({ title, description }, existing, getRoomContext()); } catch (e) {}
+      try {
+        classification = await llm.findSimilarConcepts({ title, description }, existing, getRoomContext());
+      } catch (e) {
+        console.error('Similarity detection failed:', e);
+      }
     }
 
-    if (similarIds.length > 0) {
-      const similar = existing.filter(c => similarIds.includes(c.id));
-      socket.emit('similar-found', { newConcept: { title, description }, similar });
-      return;
+    // If duplicates found, block and ask the user to decide
+    if (classification.duplicates.length > 0) {
+      const duplicateNodes = classification.duplicates
+        .map(d => {
+          const node = existing.find(c => c.id === d.id);
+          return node ? { ...node, reason: d.reason } : null;
+        })
+        .filter(Boolean);
+
+      if (duplicateNodes.length > 0) {
+        socket.emit('similar-found', {
+          newConcept: { title, description },
+          duplicates: duplicateNodes,
+          related: classification.related,
+          broader: classification.broader
+        });
+        return;
+      }
     }
 
+    // No duplicates — add the node directly
     const nodeId = addNodeToRoom(title, description, currentUser, currentRoom);
+
+    // Auto-create edges to broader concepts
+    for (const b of classification.broader) {
+      const broaderNode = existing.find(c => c.id === b.id);
+      if (!broaderNode) continue;
+
+      const edgeId = uuidv4();
+      const label = b.relationship || 'is part of';
+      run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [edgeId, currentRoom, nodeId, b.id, label, 1, currentUser.id]);
+      run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [currentRoom, currentUser.id, currentUser.name, 'connected', 'edge', edgeId, `${title} → ${broaderNode.title}`]);
+
+      io.to(currentRoom).emit('edge-added', {
+        id: edgeId, source_id: nodeId, target_id: b.id,
+        label, directed: true, created_by: currentUser.id
+      });
+      io.to(currentRoom).emit('activity', {
+        user_name: currentUser.name, action: 'connected', target_type: 'edge',
+        target_id: edgeId, details: `${title} → ${broaderNode.title}: "${label}"`,
+        created_at: new Date().toISOString()
+      });
+    }
+    if (classification.broader.length > 0) saveDb();
+
+    // Notify client about related concepts (non-blocking)
+    if (classification.related.length > 0) {
+      socket.emit('harvest-info', { relatedCount: classification.related.length });
+    }
+
     suggestConnectionsForNode(nodeId, title, description, currentRoom);
   });
 
-  socket.on('force-harvest', async ({ title, description }) => {
+  socket.on('force-harvest', async ({ title, description, broader }) => {
     if (!currentUser || !currentRoom) return;
-    logInteraction(currentRoom, currentUser.id, currentUser.name, 'concept:harvest', { conceptTitle: title, edited: false });
+    logInteraction(currentRoom, currentUser.id, currentUser.name, 'concept:harvest', { conceptTitle: title, edited: false, forced: true });
     const nodeId = addNodeToRoom(title, description, currentUser, currentRoom);
+
+    // Create broader edges if provided (forwarded from similarity detection)
+    if (broader && Array.isArray(broader) && broader.length > 0) {
+      const existing = queryAll('SELECT id, title FROM nodes WHERE room_id = ?', [currentRoom]);
+      for (const b of broader) {
+        const broaderNode = existing.find(c => c.id === b.id);
+        if (!broaderNode) continue;
+
+        const edgeId = uuidv4();
+        const label = b.relationship || 'is part of';
+        run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [edgeId, currentRoom, nodeId, b.id, label, 1, currentUser.id]);
+        run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [currentRoom, currentUser.id, currentUser.name, 'connected', 'edge', edgeId, `${title} → ${broaderNode.title}`]);
+
+        io.to(currentRoom).emit('edge-added', {
+          id: edgeId, source_id: nodeId, target_id: b.id,
+          label, directed: true, created_by: currentUser.id
+        });
+        io.to(currentRoom).emit('activity', {
+          user_name: currentUser.name, action: 'connected', target_type: 'edge',
+          target_id: edgeId, details: `${title} → ${broaderNode.title}: "${label}"`,
+          created_at: new Date().toISOString()
+        });
+      }
+      saveDb();
+    }
+
     suggestConnectionsForNode(nodeId, title, description, currentRoom);
   });
 
