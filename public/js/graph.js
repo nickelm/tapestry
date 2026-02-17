@@ -43,6 +43,7 @@ class TapestryGraph {
     this.onEdgeContext = null; // callback(edgeId, x, y)
     this.onCanvasClick = null;
     this._mergeMode = false;
+    this._searchMatchIds = null; // Set of matching node IDs during search, or null
 
     this.NODE_WIDTH = 180;
     this.NODE_HEIGHT = 52;
@@ -330,8 +331,14 @@ class TapestryGraph {
     const { neighborIds, edgeIds } = this._getNeighbors(nodeId);
     const keepNodes = new Set([nodeId, ...neighborIds]);
 
-    this.nodeGroup.selectAll('.node-group')
-      .classed('dimmed', d => !keepNodes.has(d.id));
+    if (this._searchMatchIds) {
+      // F12 active: non-matching nodes stay dimmed, hover applies within matched set
+      this.nodeGroup.selectAll('.node-group')
+        .classed('dimmed', d => !this._searchMatchIds.has(d.id) || !keepNodes.has(d.id));
+    } else {
+      this.nodeGroup.selectAll('.node-group')
+        .classed('dimmed', d => !keepNodes.has(d.id));
+    }
     this.edgeGroup.selectAll('.edge-path')
       .classed('dimmed', d => !edgeIds.has(d.id));
     this.edgeLabelGroup.selectAll('.edge-label-group')
@@ -358,8 +365,14 @@ class TapestryGraph {
       .filter(d => d.id === edgeId).classed('edge-highlighted', true);
 
     // Dim everything else
-    this.nodeGroup.selectAll('.node-group')
-      .classed('dimmed', d => !keepNodes.has(d.id));
+    if (this._searchMatchIds) {
+      // F12 active: non-matching nodes stay dimmed
+      this.nodeGroup.selectAll('.node-group')
+        .classed('dimmed', d => !this._searchMatchIds.has(d.id) || !keepNodes.has(d.id));
+    } else {
+      this.nodeGroup.selectAll('.node-group')
+        .classed('dimmed', d => !keepNodes.has(d.id));
+    }
     this.edgeGroup.selectAll('.edge-path')
       .classed('dimmed', d => d.id !== edgeId);
     this.edgeLabelGroup.selectAll('.edge-label-group')
@@ -367,9 +380,44 @@ class TapestryGraph {
   }
 
   _clearHighlight() {
-    this.nodeGroup.selectAll('.node-group').classed('dimmed', false);
-    this.edgeGroup.selectAll('.edge-path').classed('dimmed', false).classed('edge-highlighted', false);
-    this.edgeLabelGroup.selectAll('.edge-label-group').classed('dimmed', false).classed('edge-highlighted', false);
+    if (this._searchMatchIds) {
+      // Restore search dimming instead of clearing everything
+      this.applySearchFilter(this._searchMatchIds);
+    } else {
+      this.nodeGroup.selectAll('.node-group').classed('dimmed', false);
+      this.edgeGroup.selectAll('.edge-path').classed('dimmed', false);
+      this.edgeLabelGroup.selectAll('.edge-label-group').classed('dimmed', false);
+    }
+    // Always clear edge-highlighted
+    this.edgeGroup.selectAll('.edge-path').classed('edge-highlighted', false);
+    this.edgeLabelGroup.selectAll('.edge-label-group').classed('edge-highlighted', false);
+  }
+
+  // --- Search filter (F12) ---
+
+  applySearchFilter(matchingNodeIds) {
+    this._searchMatchIds = matchingNodeIds;
+    if (!matchingNodeIds) {
+      // Clear all search dimming
+      this.nodeGroup.selectAll('.node-group').classed('dimmed', false);
+      this.edgeGroup.selectAll('.edge-path').classed('dimmed', false).classed('edge-highlighted', false);
+      this.edgeLabelGroup.selectAll('.edge-label-group').classed('dimmed', false).classed('edge-highlighted', false);
+      return;
+    }
+    // Dim non-matching nodes
+    this.nodeGroup.selectAll('.node-group')
+      .classed('dimmed', d => !matchingNodeIds.has(d.id));
+    // Edges: visible only if both endpoints match
+    this.edgeGroup.selectAll('.edge-path')
+      .classed('dimmed', d => {
+        const { sourceId, targetId } = this._getEdgeEndpoints(d);
+        return !matchingNodeIds.has(sourceId) || !matchingNodeIds.has(targetId);
+      });
+    this.edgeLabelGroup.selectAll('.edge-label-group')
+      .classed('dimmed', d => {
+        const { sourceId, targetId } = this._getEdgeEndpoints(d);
+        return !matchingNodeIds.has(sourceId) || !matchingNodeIds.has(targetId);
+      });
   }
 
   // --- Render ---
@@ -856,6 +904,29 @@ class TapestryGraph {
         card.classed('node-highlight-pulse', true);
         setTimeout(() => card.classed('node-highlight-pulse', false), 1500);
       });
+  }
+
+  fitNodes(nodeIds) {
+    const nodes = nodeIds.map(id => this.nodeMap.get(id)).filter(Boolean);
+    if (nodes.length === 0) return;
+    if (nodes.length === 1) {
+      this.focusNode(nodes[0].id);
+      return;
+    }
+    const xs = nodes.map(n => n.x);
+    const ys = nodes.map(n => n.y);
+    const minX = Math.min(...xs) - this.NODE_WIDTH;
+    const maxX = Math.max(...xs) + this.NODE_WIDTH;
+    const minY = Math.min(...ys) - this.NODE_HEIGHT;
+    const maxY = Math.max(...ys) + this.NODE_HEIGHT;
+    const dx = maxX - minX;
+    const dy = maxY - minY;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const scale = Math.min(this.width / dx, this.height / dy, 1.5) * 0.85;
+    const translate = [this.width / 2 - cx * scale, this.height / 2 - cy * scale];
+    this.svg.transition().duration(400)
+      .call(this.zoom.transform, d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale));
   }
 
   autoLayout() {

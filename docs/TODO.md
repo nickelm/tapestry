@@ -8,6 +8,7 @@
 * Persistent login(?)
 * Upvote should become downvote in context menu if you have used it
 * Refactoring - code is fairly messy and in only a few files
+* Add a way to explore concepts at the bottom of the article
 
 # Completed
 

@@ -2840,5 +2840,71 @@ document.addEventListener('keydown', (e) => {
       socket.emit('posttest:dismiss');
       hidePosttestModal();
     }
+    // F12: Clear graph search on Escape
+    const searchInput = document.getElementById('graph-search-input');
+    if (searchInput && (searchInput.value || document.activeElement === searchInput)) {
+      searchInput.value = '';
+      searchInput.closest('.graph-search-container').classList.remove('has-query');
+      graph.applySearchFilter(null);
+      searchInput.blur();
+    }
   }
 });
+
+// --- Graph search (F12) ---
+
+(function initGraphSearch() {
+  const searchInput = document.getElementById('graph-search-input');
+  const searchClear = document.getElementById('graph-search-clear');
+  const searchContainer = searchInput.closest('.graph-search-container');
+
+  function debounce(fn, ms) {
+    let timer;
+    return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+  }
+
+  const handleSearch = debounce(() => {
+    const query = searchInput.value.trim().toLowerCase();
+    searchContainer.classList.toggle('has-query', query.length > 0);
+
+    if (!query) {
+      graph.applySearchFilter(null);
+      return;
+    }
+
+    const matchIds = new Set();
+    for (const node of graph.nodes) {
+      if (node.title.toLowerCase().includes(query) || (node.description && node.description.toLowerCase().includes(query))) {
+        matchIds.add(node.id);
+      }
+    }
+
+    graph.applySearchFilter(matchIds.size > 0 ? matchIds : new Set());
+
+    // Auto-pan/zoom based on match count
+    if (matchIds.size === 1) {
+      graph.focusNode([...matchIds][0]);
+    } else if (matchIds.size >= 2 && matchIds.size <= 5) {
+      graph.fitNodes([...matchIds]);
+    }
+    // >5 matches: dim only, no pan
+  }, 50);
+
+  searchInput.addEventListener('input', handleSearch);
+
+  searchClear.addEventListener('click', () => {
+    searchInput.value = '';
+    searchContainer.classList.remove('has-query');
+    graph.applySearchFilter(null);
+    searchInput.focus();
+  });
+
+  // Ctrl+F / Cmd+F to focus search
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+  });
+})();
