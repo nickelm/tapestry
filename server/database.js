@@ -98,6 +98,12 @@ async function initDatabase() {
     db.run("ALTER TABLE rooms ADD COLUMN summary TEXT DEFAULT ''");
   }
 
+  // Migration: add manual flag to nodes
+  const nodeCols = queryAll("PRAGMA table_info(nodes)");
+  if (!nodeCols.some(c => c.name === 'manual')) {
+    db.run("ALTER TABLE nodes ADD COLUMN manual INTEGER DEFAULT 0");
+  }
+
   // Migration: rename legacy state values
   db.run("UPDATE rooms SET state = 'normal' WHERE state = 'waiting'");
   db.run("UPDATE rooms SET state = 'in-progress' WHERE state = 'active'");

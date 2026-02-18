@@ -1508,13 +1508,9 @@ document.getElementById('similar-add-anyway').addEventListener('click', () => {
     const extra = pendingHarvestExtra || { related: [], broader: [] };
     socket.emit('force-harvest', {
       ...pendingHarvest,
-      broader: extra.broader
+      broader: extra.broader,
+      related: extra.related
     });
-
-    // Show toast about related concepts
-    if (extra.related.length > 0) {
-      showToast(`${extra.related.length} related concept${extra.related.length !== 1 ? 's' : ''} already in graph`);
-    }
 
     pendingHarvest = null;
     pendingHarvestExtra = null;
@@ -1526,14 +1522,6 @@ document.getElementById('similar-cancel').addEventListener('click', () => {
   pendingHarvest = null;
   pendingHarvestExtra = null;
   document.getElementById('similar-modal').classList.remove('visible');
-});
-
-// ========== HARVEST INFO (non-blocking related concepts indicator) ==========
-
-socket.on('harvest-info', ({ relatedCount }) => {
-  if (relatedCount > 0) {
-    showToast(`${relatedCount} related concept${relatedCount !== 1 ? 's' : ''} already in graph`);
-  }
 });
 
 // ========== CONTEXT MENU ==========
@@ -1669,18 +1657,141 @@ function hideCanvasContextMenu() {
 
 document.addEventListener('click', () => hideCanvasContextMenu());
 
+let canvasClickX = 0;
+let canvasClickY = 0;
+
 canvasContextMenu.querySelectorAll('.context-menu-item').forEach(item => {
   item.addEventListener('click', (e) => {
     e.stopPropagation();
     const action = item.dataset.action;
     if (action === 'export-svg') triggerExportSVG();
+    if (action === 'add-concept') showManualSeedForm(canvasClickX, canvasClickY);
     hideCanvasContextMenu();
   });
 });
 
 document.getElementById('graph-svg').addEventListener('contextmenu', (event) => {
   event.preventDefault();
+  canvasClickX = event.clientX;
+  canvasClickY = event.clientY;
   showCanvasContextMenu(event.clientX, event.clientY);
+});
+
+// ========== MANUAL SEED FORM (F15) ==========
+
+const manualSeedForm = document.getElementById('manual-seed-form');
+const manualSeedInput = document.getElementById('manual-seed-input');
+const manualSeedHint = document.getElementById('manual-seed-hint');
+
+function showManualSeedForm(screenX, screenY) {
+  manualSeedInput.value = '';
+  manualSeedHint.textContent = 'Enter to add \u00b7 Esc to cancel';
+  manualSeedHint.classList.remove('error');
+  manualSeedInput.classList.remove('error');
+  manualSeedInput.disabled = false;
+
+  manualSeedForm.style.left = screenX + 'px';
+  manualSeedForm.style.top = screenY + 'px';
+  manualSeedForm.classList.add('visible');
+
+  // Store screen coordinates for graph-space conversion
+  manualSeedForm.dataset.screenX = screenX;
+  manualSeedForm.dataset.screenY = screenY;
+
+  setTimeout(() => manualSeedInput.focus(), 0);
+}
+
+function hideManualSeedForm() {
+  manualSeedForm.classList.remove('visible');
+  manualSeedInput.value = '';
+}
+
+function screenToGraphCoords(screenX, screenY) {
+  const svgRect = document.getElementById('graph-svg').getBoundingClientRect();
+  const svgX = screenX - svgRect.left;
+  const svgY = screenY - svgRect.top;
+  const t = graph.currentTransform;
+  return {
+    x: (svgX - t.x) / t.k,
+    y: (svgY - t.y) / t.k
+  };
+}
+
+manualSeedInput.addEventListener('keydown', async (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    hideManualSeedForm();
+    return;
+  }
+
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const title = manualSeedInput.value.trim();
+
+    if (title.length < 3) {
+      manualSeedHint.textContent = 'Title must be at least 3 characters';
+      manualSeedHint.classList.add('error');
+      manualSeedInput.classList.add('error');
+      return;
+    }
+
+    if (graphTitleMap.has(title.toLowerCase())) {
+      manualSeedHint.textContent = 'This concept already exists in the graph';
+      manualSeedHint.classList.add('error');
+      manualSeedInput.classList.add('error');
+      return;
+    }
+
+    const graphCoords = screenToGraphCoords(
+      parseFloat(manualSeedForm.dataset.screenX),
+      parseFloat(manualSeedForm.dataset.screenY)
+    );
+
+    manualSeedInput.disabled = true;
+    manualSeedHint.textContent = 'Creating concept\u2026';
+    manualSeedHint.classList.remove('error');
+    manualSeedInput.classList.remove('error');
+
+    try {
+      const res = await fetch(`/api/rooms/${currentRoom.id}/manual-seed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          username: currentUser.name,
+          x: graphCoords.x,
+          y: graphCoords.y
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        manualSeedHint.textContent = err.error || 'Failed to create concept';
+        manualSeedHint.classList.add('error');
+        manualSeedInput.disabled = false;
+        manualSeedInput.focus();
+        return;
+      }
+
+      hideManualSeedForm();
+    } catch (err) {
+      manualSeedHint.textContent = 'Network error';
+      manualSeedHint.classList.add('error');
+      manualSeedInput.disabled = false;
+    }
+  }
+});
+
+manualSeedInput.addEventListener('input', () => {
+  manualSeedInput.classList.remove('error');
+  manualSeedHint.textContent = 'Enter to add \u00b7 Esc to cancel';
+  manualSeedHint.classList.remove('error');
+});
+
+document.addEventListener('click', (e) => {
+  if (manualSeedForm.classList.contains('visible') && !manualSeedForm.contains(e.target)) {
+    hideManualSeedForm();
+  }
 });
 
 // ========== EDIT NODE MODAL ==========

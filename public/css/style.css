@@ -985,6 +985,53 @@ body:has(.admin-control-strip:not(.hidden)) #app-screen {
   background: #15803d;
 }
 
+/* Manual Seed Form (F15) */
+.manual-seed-form {
+  display: none;
+  position: fixed;
+  z-index: 101;
+  padding: 0;
+}
+
+.manual-seed-form.visible {
+  display: block;
+}
+
+.manual-seed-input {
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  width: 220px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.manual-seed-input:focus {
+  box-shadow: 0 0 0 3px var(--accent-light), var(--shadow-md);
+}
+
+.manual-seed-input.error {
+  border-color: #dc2626;
+}
+
+.manual-seed-actions {
+  margin-top: 2px;
+}
+
+.manual-seed-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-left: 4px;
+}
+
+.manual-seed-hint.error {
+  color: #dc2626;
+}
+
 /* Selection Toolbar (F5) */
 .selection-toolbar {
   display: none;

@@ -169,6 +169,34 @@ Respond ONLY with valid JSON array, no markdown fences:
     return response.content[0].text.trim();
   }
 
+  async generateConceptDescription(title, roomTopic = '', existingNodeTitles = []) {
+    const topicLine = roomTopic ? `\nThe knowledge graph topic is "${roomTopic}".` : '';
+    const existingLine = existingNodeTitles.length > 0
+      ? `\n\nExisting concepts in the graph:\n${existingNodeTitles.join(', ')}`
+      : '';
+
+    const response = await this.client.messages.create({
+      model: this.taskModel,
+      max_tokens: 100,
+      system: `You provide concise concept descriptions for knowledge graph nodes.${topicLine} Respond with ONLY a single sentence, max 25 words. No formatting, no quotes.`,
+      messages: [{
+        role: 'user',
+        content: `A student has manually added the concept: "${title}"${existingLine}\n\nWrite a one-sentence description of this concept.`
+      }]
+    });
+    return response.content[0].text.trim();
+  }
+
+  async shortenTitle(title) {
+    const response = await this.client.messages.create({
+      model: this.taskModel,
+      max_tokens: 50,
+      system: 'Shorten the following concept title to at most 40 characters while preserving its core meaning. Respond with ONLY the shortened title, no explanation or quotes.',
+      messages: [{ role: 'user', content: title }]
+    });
+    return response.content[0].text.trim();
+  }
+
   async findSimilarConcepts(newConcept, existingConcepts, { roomName, roomSummary } = {}) {
     if (existingConcepts.length === 0) return { duplicates: [], related: [], broader: [] };
 
@@ -179,11 +207,11 @@ Respond ONLY with valid JSON array, no markdown fences:
 
 Given a new concept and a list of existing concepts, classify each relevant existing concept into one of three categories:
 
-1. duplicates: The existing concept is essentially the SAME concept, just worded differently. These are merge candidates. Be CONSERVATIVE: two things of the same type (e.g., two different aircraft, two different philosophers, two different algorithms) are RELATED, not duplicates. Only flag as duplicate if they truly refer to the same specific idea or entity.
+1. duplicates: The same concept worded differently. These should be merged. Be very conservative. Two things of the same type (two philosophers, two algorithms, two aircraft) are NEVER duplicates. Only flag cases where both terms refer to the identical entity or idea (e.g., "ML" and "Machine Learning", "Kant" and "Immanuel Kant").
 
-2. related: The existing concept is distinct but thematically close — a sibling concept, a complementary idea, or something in the same domain. NOT a duplicate.
+2. related: Concepts that directly depend on, interact with, or causally influence the new concept. "Directly" means: you could write a single sentence explaining the specific relationship. Mere thematic proximity (same field, same era, same category) does NOT qualify.
 
-3. broader: The existing concept is a parent category, generalization, or umbrella topic that encompasses the new concept.
+3. broader: A parent category or generalization that contains the new concept.
 
 Respond ONLY with valid JSON, no markdown fences:
 {"duplicates": [{"id": "...", "reason": "why this is the same concept"}], "related": [{"id": "...", "relationship": "how they relate"}], "broader": [{"id": "...", "relationship": "how the new concept fits under this"}]}
@@ -207,7 +235,7 @@ If no concepts match a category, use an empty array. Only include genuinely rele
     }
   }
 
-  async suggestConnections(concept, existingNodes, { roomName, roomSummary } = {}) {
+  async suggestConnections(concept, existingNodes, { roomName, roomSummary } = {}, priorityCandidates = []) {
     if (existingNodes.length === 0) return [];
 
     const roomContext = this._buildRoomContext(roomName, roomSummary);
@@ -230,7 +258,7 @@ Respond ONLY with a valid JSON array, no markdown fences:
 If no good connections exist, return [].`,
       messages: [{
         role: 'user',
-        content: `Concept: "${concept.title}" - ${concept.description || 'No description'}\n\nExisting concepts in the graph:\n${existingNodes.map(n => `- ID: ${n.id}, "${n.title}": ${n.description || 'No description'}`).join('\n')}`
+        content: `Concept: "${concept.title}" - ${concept.description || 'No description'}\n\nExisting concepts in the graph:\n${existingNodes.map(n => `- ID: ${n.id}, "${n.title}": ${n.description || 'No description'}`).join('\n')}${priorityCandidates.length > 0 ? `\n\nThe following concepts have been pre-identified as directly related. Prioritize connections to these:\n${priorityCandidates.map(n => `- ID: ${n.id}, "${n.title}"`).join('\n')}` : ''}`
       }]
     });
 

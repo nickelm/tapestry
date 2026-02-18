@@ -132,6 +132,134 @@ app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
   }
 });
 
+app.post('/api/rooms/:roomId/manual-seed', async (req, res) => {
+  const rid = req.params.roomId;
+  const { title, username, x, y } = req.body;
+
+  if (!title || title.trim().length < 3) {
+    return res.status(400).json({ error: 'Title must be at least 3 characters' });
+  }
+
+  const room = queryOne('SELECT name, summary FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  const user = queryOne('SELECT id, name, color FROM users WHERE name = ? AND room_id = ?', [username, rid]);
+  if (!user) return res.status(400).json({ error: 'User not found in room' });
+
+  try {
+    let finalTitle = title.trim();
+
+    // Step 1: Title truncation if > 40 chars
+    if (finalTitle.length > 40) {
+      finalTitle = await llm.shortenTitle(finalTitle);
+    }
+
+    // Step 2: Generate description
+    const existingNodes = queryAll('SELECT title FROM nodes WHERE room_id = ?', [rid]);
+    const existingTitles = existingNodes.map(n => n.title);
+    const description = await llm.generateConceptDescription(finalTitle, room.name, existingTitles);
+
+    // Step 3: Insert node
+    const nodeId = uuidv4();
+    const nodeX = x != null ? x : (Math.random() - 0.5) * 800;
+    const nodeY = y != null ? y : (Math.random() - 0.5) * 600;
+
+    run('INSERT INTO nodes (id, room_id, title, description, x, y, created_by, manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [nodeId, rid, finalTitle, description, nodeX, nodeY, user.id, 1]);
+    run('INSERT INTO node_contributors (node_id, user_id) VALUES (?, ?)', [nodeId, user.id]);
+    run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [rid, user.id, user.name, 'added', 'node', nodeId, finalTitle]);
+    saveDb();
+
+    const node = {
+      id: nodeId, title: finalTitle, description, x: nodeX, y: nodeY,
+      created_by: user.id, upvotes: 0, merged_count: 0, pinned: 0,
+      manual: 1,
+      contributors: [{ id: user.id, name: user.name, color: user.color }]
+    };
+
+    // Emit to all clients in room
+    io.to(rid).emit('node-added', node);
+    io.to(rid).emit('activity', {
+      user_name: user.name, action: 'added', target_type: 'node',
+      target_id: nodeId, details: finalTitle,
+      created_at: new Date().toISOString()
+    });
+
+    // Return synchronous result
+    res.json({ node });
+
+    // Steps 4+5: Async post-creation (similarity + auto-connection)
+    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ?', [rid, nodeId]);
+    if (existing.length > 0) {
+      try {
+        const classification = await llm.findSimilarConcepts(
+          { title: finalTitle, description }, existing,
+          { roomName: room.name, roomSummary: room.summary || '' }
+        );
+
+        // Auto-create broader edges
+        for (const b of classification.broader) {
+          const broaderNode = existing.find(c => c.id === b.id);
+          if (!broaderNode) continue;
+          const edgeId = uuidv4();
+          const label = b.relationship || 'is part of';
+          run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [edgeId, rid, nodeId, b.id, label, 1, user.id]);
+          io.to(rid).emit('edge-added', {
+            id: edgeId, source_id: nodeId, target_id: b.id,
+            label, directed: true, created_by: user.id
+          });
+          io.to(rid).emit('activity', {
+            user_name: user.name, action: 'connected', target_type: 'edge',
+            target_id: edgeId, details: `${finalTitle} → ${broaderNode.title}: "${label}"`,
+            created_at: new Date().toISOString()
+          });
+        }
+        if (classification.broader.length > 0) saveDb();
+
+        // Auto-connection suggestions with related as priority candidates
+        const connectedIds = queryAll(
+          'SELECT source_id, target_id FROM edges WHERE room_id = ? AND (source_id = ? OR target_id = ?)',
+          [rid, nodeId, nodeId]
+        ).map(e => e.source_id === nodeId ? e.target_id : e.source_id);
+
+        const candidates = existing.filter(n => !connectedIds.includes(n.id));
+        if (candidates.length > 0) {
+          const relatedIds = new Set((classification.related || []).map(r => r.id));
+          const priorityCandidates = candidates.filter(n => relatedIds.has(n.id));
+
+          const suggestions = await llm.suggestConnections(
+            { title: finalTitle, description }, candidates,
+            { roomName: room.name, roomSummary: room.summary || '' },
+            priorityCandidates
+          );
+
+          if (suggestions.length > 0) {
+            const enriched = suggestions.map(s => {
+              const target = candidates.find(n => n.id === s.targetId);
+              return target ? { ...s, targetTitle: target.title, targetDescription: target.description } : null;
+            }).filter(Boolean);
+
+            if (enriched.length > 0) {
+              io.to(rid).emit('suggest-connections', {
+                nodeId, nodeTitle: finalTitle, suggestions: enriched
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Manual seed post-processing failed:', e);
+      }
+    }
+  } catch (e) {
+    console.error('manual-seed error:', e.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to create concept' });
+    }
+  }
+});
+
 app.get('/api/rooms/:roomId/export/interactions', requireAdmin, (req, res) => {
   const rid = req.params.roomId;
   const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
@@ -616,15 +744,10 @@ io.on('connection', (socket) => {
     }
     if (classification.broader.length > 0) saveDb();
 
-    // Notify client about related concepts (non-blocking)
-    if (classification.related.length > 0) {
-      socket.emit('harvest-info', { relatedCount: classification.related.length });
-    }
-
-    suggestConnectionsForNode(nodeId, title, description, currentRoom);
+    suggestConnectionsForNode(nodeId, title, description, currentRoom, classification.related);
   });
 
-  socket.on('force-harvest', async ({ title, description, broader }) => {
+  socket.on('force-harvest', async ({ title, description, broader, related }) => {
     if (!currentUser || !currentRoom) return;
     logInteraction(currentRoom, currentUser.id, currentUser.name, 'concept:harvest', { conceptTitle: title, edited: false, forced: true });
     const nodeId = addNodeToRoom(title, description, currentUser, currentRoom);
@@ -656,16 +779,16 @@ io.on('connection', (socket) => {
       saveDb();
     }
 
-    suggestConnectionsForNode(nodeId, title, description, currentRoom);
+    suggestConnectionsForNode(nodeId, title, description, currentRoom, related || []);
   });
 
-  function addNodeToRoom(title, description, user, roomId) {
+  function addNodeToRoom(title, description, user, roomId, { manual = 0 } = {}) {
     const nodeId = uuidv4();
     const x = (Math.random() - 0.5) * 800;
     const y = (Math.random() - 0.5) * 600;
 
-    run('INSERT INTO nodes (id, room_id, title, description, x, y, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [nodeId, roomId, title, description, x, y, user.id]);
+    run('INSERT INTO nodes (id, room_id, title, description, x, y, created_by, manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [nodeId, roomId, title, description, x, y, user.id, manual]);
     run('INSERT INTO node_contributors (node_id, user_id) VALUES (?, ?)', [nodeId, user.id]);
     run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [roomId, user.id, user.name, 'harvested', 'node', nodeId, title]);
@@ -682,7 +805,7 @@ io.on('connection', (socket) => {
     return nodeId;
   }
 
-  async function suggestConnectionsForNode(nodeId, title, description, roomId) {
+  async function suggestConnectionsForNode(nodeId, title, description, roomId, related = []) {
     const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ?', [roomId, nodeId]);
     if (existing.length < 1) return;
 
@@ -695,8 +818,12 @@ io.on('connection', (socket) => {
     const candidates = existing.filter(n => !connectedIds.includes(n.id));
     if (candidates.length === 0) return;
 
+    // Partition candidates: related concepts from similarity detection get priority
+    const relatedIds = new Set(related.map(r => r.id));
+    const priorityCandidates = candidates.filter(n => relatedIds.has(n.id));
+
     try {
-      const suggestions = await llm.suggestConnections({ title, description }, candidates, getRoomContext());
+      const suggestions = await llm.suggestConnections({ title, description }, candidates, getRoomContext(), priorityCandidates);
       if (suggestions.length === 0) return;
 
       const enriched = suggestions.map(s => {

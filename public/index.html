@@ -218,8 +218,21 @@
 
   <!-- Canvas Context Menu -->
   <div class="context-menu" id="canvas-context-menu">
+    <div class="context-menu-item" data-action="add-concept">
+      <span class="cm-icon">+</span> <span class="cm-label">Add concept</span>
+    </div>
+    <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="export-svg">
       <span class="cm-icon">⤓</span> <span class="cm-label">Export as SVG</span>
+    </div>
+  </div>
+
+  <!-- Manual Seed Form (F15) -->
+  <div class="manual-seed-form" id="manual-seed-form">
+    <input type="text" class="manual-seed-input" id="manual-seed-input"
+           placeholder="Concept title..." autocomplete="off">
+    <div class="manual-seed-actions">
+      <span class="manual-seed-hint" id="manual-seed-hint">Enter to add · Esc to cancel</span>
     </div>
   </div>
 
