@@ -21,6 +21,37 @@ function forceGravity(center, strength) {
   return force;
 }
 
+// Custom rectangular repulsion force: pushes nodes out of a paper-shaped rectangle.
+function forcePaperRepel(paperRect, strength) {
+  let nodes;
+  function force(alpha) {
+    if (!paperRect.active) return;
+    const halfW = paperRect.width / 2 + 20;
+    const halfH = paperRect.height / 2 + 20;
+    const left = paperRect.cx - halfW;
+    const right = paperRect.cx + halfW;
+    const top = paperRect.cy - halfH;
+    const bottom = paperRect.cy + halfH;
+    for (const node of nodes) {
+      if (node.fx != null && node.fy != null) continue;
+      if (node.x > left && node.x < right && node.y > top && node.y < bottom) {
+        const dLeft = node.x - left;
+        const dRight = right - node.x;
+        const dTop = node.y - top;
+        const dBottom = bottom - node.y;
+        const minD = Math.min(dLeft, dRight, dTop, dBottom);
+        const k = strength * alpha;
+        if (minD === dLeft) node.vx -= k * (halfW - dLeft);
+        else if (minD === dRight) node.vx += k * (halfW - dRight);
+        else if (minD === dTop) node.vy -= k * (halfH - dTop);
+        else node.vy += k * (halfH - dBottom);
+      }
+    }
+  }
+  force.initialize = (n) => { nodes = n; };
+  return force;
+}
+
 class TapestryGraph {
   constructor(containerId) {
     this.container = document.getElementById(containerId);
@@ -42,8 +73,25 @@ class TapestryGraph {
     this.onNodeUpvote = null;
     this.onEdgeContext = null; // callback(edgeId, x, y)
     this.onCanvasClick = null;
+    this.onPaperDoubleClick = null; // callback(paperUrl)
     this._mergeMode = false;
     this._searchMatchIds = null; // Set of matching node IDs during search, or null
+
+    // Paper overlay state (F17)
+    this._paperOverlay = null;
+    this._paperCanvas = null;
+    this._pdfDoc = null;
+    this._paperUrl = null;
+    this._paperCurrentPage = 1;
+    this._paperTotalPages = 0;
+    this._paperPageCache = {};
+    this.PAPER_WIDTH = 420;
+    this.PAPER_HEIGHT = 540;
+    this.PAPER_TITLE_HEIGHT = 32;
+    this.PAPER_NAV_HEIGHT = 36;
+    this._paperX = -420 / 2;
+    this._paperY = -(32 + 540 + 36) / 2;
+    this._paperCollisionRect = { cx: 0, cy: 0, width: 420, height: 32 + 540 + 36, active: false };
 
     this.NODE_WIDTH = 180;
     this.NODE_HEIGHT = 52;
@@ -156,8 +204,16 @@ class TapestryGraph {
   _initSimulation() {
     this.simulation = d3.forceSimulation()
       .force('link', d3.forceLink().id(d => d.id)
-        .distance(60)
-        .strength(1.5)
+        .distance(d => {
+          const s = typeof d.source === 'object' ? d.source : this.nodeMap.get(d.source);
+          const t = typeof d.target === 'object' ? d.target : this.nodeMap.get(d.target);
+          return (s && s.hidden) || (t && t.hidden) ? 350 : 60;
+        })
+        .strength(d => {
+          const s = typeof d.source === 'object' ? d.source : this.nodeMap.get(d.source);
+          const t = typeof d.target === 'object' ? d.target : this.nodeMap.get(d.target);
+          return (s && s.hidden) || (t && t.hidden) ? 0.8 : 1.5;
+        })
         .iterations(2))
       .force('charge', d3.forceManyBody()
         .strength(-150)
@@ -167,6 +223,7 @@ class TapestryGraph {
         .strength(0.7)
         .iterations(2))
       .force('gravity', forceGravity({ x: 0, y: 0 }, 0.5))
+      .force('paperRepel', forcePaperRepel(this._paperCollisionRect, 0.8))
       .on('tick', () => this._tick());
   }
 
@@ -176,6 +233,7 @@ class TapestryGraph {
       .on('zoom', (event) => {
         this.g.attr('transform', event.transform);
         this.currentTransform = event.transform;
+        this._updatePaperTransform();
       });
 
     this.svg.call(this.zoom);
@@ -190,6 +248,14 @@ class TapestryGraph {
     });
   }
 
+  _updatePaperTransform() {
+    if (!this._paperOverlay) return;
+    const t = this.currentTransform;
+    const screenX = t.x + this._paperX * t.k;
+    const screenY = t.y + this._paperY * t.k;
+    this._paperOverlay.style.transform = `translate(${screenX}px, ${screenY}px) scale(${t.k})`;
+  }
+
   _resize() {
     const rect = this.container.getBoundingClientRect();
     this.width = rect.width;
@@ -198,6 +264,11 @@ class TapestryGraph {
 
   // --- Rectilinear edge path ---
   _rectilinearPath(source, target) {
+    // If one endpoint is hidden (standin behind paper), terminate at paper boundary
+    if (source.hidden || target.hidden) {
+      return this._paperEdgePath(source, target);
+    }
+
     const sx = source.x;
     const sy = source.y;
     const tx = target.x;
@@ -236,6 +307,58 @@ class TapestryGraph {
     }
   }
 
+  // Route edge from a visible concept to the paper boundary (for hidden standin edges)
+  _paperEdgePath(source, target) {
+    const hidden = source.hidden ? source : target;
+    const visible = source.hidden ? target : source;
+
+    // Paper boundary dimensions (half-width/height + margin)
+    const phw = this.PAPER_WIDTH / 2 + 10;
+    const phh = this._paperCollisionRect.height / 2 + 10;
+
+    // Direction from hidden center to visible node
+    const dx = visible.x - hidden.x;
+    const dy = visible.y - hidden.y;
+    if (dx === 0 && dy === 0) return '';
+
+    // Find exit point on paper boundary rectangle
+    let bx, by;
+    if (Math.abs(dx / phw) > Math.abs(dy / phh)) {
+      // Exits left or right edge
+      bx = hidden.x + (dx > 0 ? phw : -phw);
+      by = hidden.y + dy * (phw / Math.abs(dx));
+      by = Math.max(hidden.y - phh, Math.min(hidden.y + phh, by));
+    } else {
+      // Exits top or bottom edge
+      by = hidden.y + (dy > 0 ? phh : -phh);
+      bx = hidden.x + dx * (phh / Math.abs(dy));
+      bx = Math.max(hidden.x - phw, Math.min(hidden.x + phw, bx));
+    }
+
+    // Visible node boundary point
+    const nhw = this.NODE_WIDTH / 2 + 4;
+    const nhh = this.NODE_HEIGHT / 2 + 4;
+    const edx = visible.x - bx;
+    const edy = visible.y - by;
+    let vx, vy;
+    if (Math.abs(edx) > Math.abs(edy)) {
+      vx = visible.x + (edx > 0 ? -nhw : nhw);
+      vy = visible.y;
+    } else {
+      vx = visible.x;
+      vy = visible.y + (edy > 0 ? -nhh : nhh);
+    }
+
+    // Rectilinear route from paper boundary to concept boundary
+    if (Math.abs(edx) > Math.abs(edy)) {
+      const midX = (bx + vx) / 2;
+      return `M${bx},${by} L${midX},${by} L${midX},${vy} L${vx},${vy}`;
+    } else {
+      const midY = (by + vy) / 2;
+      return `M${bx},${by} L${bx},${midY} L${vx},${midY} L${vx},${vy}`;
+    }
+  }
+
   _tick() {
     // Bounding box clamp — keep unpinned nodes within ±1.5× viewport
     const bw = this.width * 1.5;
@@ -266,6 +389,14 @@ class TapestryGraph {
         const source = this.nodeMap.get(d.source_id || (d.source && d.source.id) || d.source);
         const target = this.nodeMap.get(d.target_id || (d.target && d.target.id) || d.target);
         if (!source || !target) return '';
+        // For hidden-endpoint edges, place label near the visible concept (not under PDF)
+        if (source.hidden || target.hidden) {
+          const visible = source.hidden ? target : source;
+          const hidden = source.hidden ? source : target;
+          const mx = visible.x + (hidden.x - visible.x) * 0.3;
+          const my = visible.y + (hidden.y - visible.y) * 0.3;
+          return `translate(${mx}, ${my})`;
+        }
         const mx = (source.x + target.x) / 2;
         const my = (source.y + target.y) / 2;
         return `translate(${mx}, ${my})`;
@@ -514,9 +645,10 @@ class TapestryGraph {
         .attr('height', bbox.height + 4);
     });
 
-    // --- NODES ---
+    // --- NODES (hidden nodes stay in simulation but get no SVG elements) ---
+    const visibleNodes = this.nodes.filter(n => !n.hidden);
     const nodeSelection = this.nodeGroup.selectAll('.node-group')
-      .data(this.nodes, d => d.id);
+      .data(visibleNodes, d => d.id);
 
     nodeSelection.exit().remove();
 
@@ -754,10 +886,16 @@ class TapestryGraph {
   // --- Public API ---
 
   addNode(node) {
-    // Set initial position if not already set
-    if (node.x === 0 && node.y === 0) {
+    node.hidden = !!node.hidden;
+    node.pinned = !!node.pinned;
+    // Set initial position if not already set (skip for pinned nodes)
+    if (node.x === 0 && node.y === 0 && !node.pinned) {
       node.x = (Math.random() - 0.5) * 600;
       node.y = (Math.random() - 0.5) * 400;
+    }
+    if (node.pinned) {
+      node.fx = node.x;
+      node.fy = node.y;
     }
     this.nodes.push(node);
     this.nodeMap.set(node.id, node);
@@ -866,14 +1004,34 @@ class TapestryGraph {
   }
 
   fitView() {
-    if (this.nodes.length === 0) return;
+    if (this.nodes.length === 0 && !this._paperOverlay) return;
 
-    const xs = this.nodes.map(n => n.x);
-    const ys = this.nodes.map(n => n.y);
-    const minX = Math.min(...xs) - this.NODE_WIDTH;
-    const maxX = Math.max(...xs) + this.NODE_WIDTH;
-    const minY = Math.min(...ys) - this.NODE_HEIGHT;
-    const maxY = Math.max(...ys) + this.NODE_HEIGHT;
+    let minX, maxX, minY, maxY;
+
+    if (this.nodes.length > 0) {
+      const xs = this.nodes.map(n => n.x);
+      const ys = this.nodes.map(n => n.y);
+      minX = Math.min(...xs) - this.NODE_WIDTH;
+      maxX = Math.max(...xs) + this.NODE_WIDTH;
+      minY = Math.min(...ys) - this.NODE_HEIGHT;
+      maxY = Math.max(...ys) + this.NODE_HEIGHT;
+    } else {
+      minX = maxX = 0;
+      minY = maxY = 0;
+    }
+
+    // Include paper in bounds
+    if (this._paperOverlay) {
+      const totalH = this.PAPER_TITLE_HEIGHT + this.PAPER_HEIGHT + this.PAPER_NAV_HEIGHT;
+      const pLeft = this._paperX - 20;
+      const pRight = this._paperX + this.PAPER_WIDTH + 20;
+      const pTop = this._paperY - 20;
+      const pBottom = this._paperY + totalH + 20;
+      minX = Math.min(minX, pLeft);
+      maxX = Math.max(maxX, pRight);
+      minY = Math.min(minY, pTop);
+      maxY = Math.max(maxY, pBottom);
+    }
 
     const dx = maxX - minX;
     const dy = maxY - minY;
@@ -1086,9 +1244,213 @@ class TapestryGraph {
     return { success: true };
   }
 
+  // --- Paper overlay (F17) ---
+
+  showPaper(pdfDoc, paperTitle, paperUrl) {
+    this._pdfDoc = pdfDoc;
+    this._paperUrl = paperUrl;
+    this._paperTitle = paperTitle;
+    this._paperTotalPages = pdfDoc.numPages;
+    this._paperCurrentPage = 1;
+    this._paperPageCache = {};
+
+    // Create overlay DOM
+    const overlay = document.createElement('div');
+    overlay.className = 'paper-overlay';
+    overlay.style.transformOrigin = '0 0';
+
+    // Title bar
+    const titleBar = document.createElement('div');
+    titleBar.className = 'paper-title-bar';
+    titleBar.textContent = paperTitle || 'Paper';
+    titleBar.title = paperTitle || '';
+    overlay.appendChild(titleBar);
+
+    // Canvas wrap
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'paper-canvas-wrap';
+
+    const canvas = document.createElement('canvas');
+    canvas.width = this.PAPER_WIDTH * 2;  // 2x for retina
+    canvas.height = this.PAPER_HEIGHT * 2;
+    canvas.style.width = this.PAPER_WIDTH + 'px';
+    canvas.style.height = this.PAPER_HEIGHT + 'px';
+    canvasWrap.appendChild(canvas);
+    this._paperCanvas = canvas;
+
+    // Loading placeholder
+    const loading = document.createElement('div');
+    loading.className = 'paper-loading';
+    canvasWrap.appendChild(loading);
+
+    overlay.appendChild(canvasWrap);
+
+    // Navigation bar
+    const navBar = document.createElement('div');
+    navBar.className = 'paper-nav-bar';
+
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'paper-nav-btn paper-prev';
+    prevBtn.innerHTML = '&#9664;';
+    prevBtn.addEventListener('click', (e) => { e.stopPropagation(); this._navigatePaper(-1); });
+
+    const pageIndicator = document.createElement('span');
+    pageIndicator.className = 'paper-page-indicator';
+    this._paperPageIndicator = pageIndicator;
+
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'paper-nav-btn paper-next';
+    nextBtn.innerHTML = '&#9654;';
+    nextBtn.addEventListener('click', (e) => { e.stopPropagation(); this._navigatePaper(1); });
+
+    navBar.appendChild(prevBtn);
+    navBar.appendChild(pageIndicator);
+    navBar.appendChild(nextBtn);
+    overlay.appendChild(navBar);
+
+    // Double-click opens PDF in reader panel
+    overlay.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (this.onPaperDoubleClick && this._paperUrl) {
+        this.onPaperDoubleClick(this._paperUrl);
+      }
+    });
+
+    // Prevent overlay clicks from propagating to SVG (which deselects nodes)
+    overlay.addEventListener('click', (e) => e.stopPropagation());
+    overlay.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    // Forward wheel events to D3 zoom so graph zooms even when hovering over paper
+    overlay.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const factor = Math.pow(2, -e.deltaY * 0.002);
+      const svgRect = this.svg.node().getBoundingClientRect();
+      const point = [e.clientX - svgRect.left, e.clientY - svgRect.top];
+      this.svg.call(this.zoom.scaleBy, factor, point);
+    }, { passive: false });
+
+    this._paperOverlay = overlay;
+    this.container.appendChild(overlay);
+
+    // Activate collision force
+    this._paperCollisionRect.active = true;
+    this._paperCollisionRect.cx = 0;
+    this._paperCollisionRect.cy = 0;
+    this._paperCollisionRect.width = this.PAPER_WIDTH;
+    this._paperCollisionRect.height = this.PAPER_TITLE_HEIGHT + this.PAPER_HEIGHT + this.PAPER_NAV_HEIGHT;
+    this.simulation.alpha(0.3).restart();
+
+    // Render first page
+    this._updatePageIndicator();
+    this._updatePaperTransform();
+    this._renderPaperPage(1);
+    this._preRenderAdjacentPages();
+  }
+
+  async _renderPaperPage(pageNum) {
+    if (!this._pdfDoc || pageNum < 1 || pageNum > this._paperTotalPages) return;
+
+    // Use cache if available
+    if (this._paperPageCache[pageNum]) {
+      this._swapVisibleCanvas(this._paperPageCache[pageNum]);
+      return;
+    }
+
+    const page = await this._pdfDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(
+      (this.PAPER_WIDTH * 2) / viewport.width,
+      (this.PAPER_HEIGHT * 2) / viewport.height
+    );
+    const scaledViewport = page.getViewport({ scale });
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = this.PAPER_WIDTH * 2;
+    offCanvas.height = this.PAPER_HEIGHT * 2;
+    const ctx = offCanvas.getContext('2d');
+
+    // Center the page within the canvas
+    const offsetX = (this.PAPER_WIDTH * 2 - scaledViewport.width) / 2;
+    const offsetY = (this.PAPER_HEIGHT * 2 - scaledViewport.height) / 2;
+    ctx.translate(offsetX, offsetY);
+
+    await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
+
+    this._paperPageCache[pageNum] = offCanvas;
+
+    // LRU: keep at most 7 cached pages
+    const cachedPages = Object.keys(this._paperPageCache).map(Number);
+    if (cachedPages.length > 7) {
+      const toEvict = cachedPages
+        .filter(p => Math.abs(p - this._paperCurrentPage) > 3)
+        .sort((a, b) => Math.abs(b - this._paperCurrentPage) - Math.abs(a - this._paperCurrentPage));
+      for (const p of toEvict) {
+        if (Object.keys(this._paperPageCache).length <= 7) break;
+        delete this._paperPageCache[p];
+      }
+    }
+
+    if (pageNum === this._paperCurrentPage) {
+      this._swapVisibleCanvas(offCanvas);
+    }
+  }
+
+  _swapVisibleCanvas(offCanvas) {
+    if (!this._paperCanvas) return;
+    const ctx = this._paperCanvas.getContext('2d');
+    ctx.clearRect(0, 0, this._paperCanvas.width, this._paperCanvas.height);
+    ctx.drawImage(offCanvas, 0, 0);
+    // Hide loading placeholder
+    const loading = this._paperOverlay?.querySelector('.paper-loading');
+    if (loading) loading.style.display = 'none';
+  }
+
+  _navigatePaper(direction) {
+    const newPage = this._paperCurrentPage + direction;
+    if (newPage < 1 || newPage > this._paperTotalPages) return;
+    this._paperCurrentPage = newPage;
+    this._renderPaperPage(newPage);
+    this._updatePageIndicator();
+    this._preRenderAdjacentPages();
+  }
+
+  _preRenderAdjacentPages() {
+    const prev = this._paperCurrentPage - 1;
+    const next = this._paperCurrentPage + 1;
+    if (prev >= 1 && !this._paperPageCache[prev]) this._renderPaperPage(prev);
+    if (next <= this._paperTotalPages && !this._paperPageCache[next]) this._renderPaperPage(next);
+  }
+
+  _updatePageIndicator() {
+    if (!this._paperPageIndicator) return;
+    this._paperPageIndicator.textContent = `${this._paperCurrentPage} / ${this._paperTotalPages}`;
+    // Disable buttons at boundaries
+    const prevBtn = this._paperOverlay?.querySelector('.paper-prev');
+    const nextBtn = this._paperOverlay?.querySelector('.paper-next');
+    if (prevBtn) prevBtn.disabled = this._paperCurrentPage <= 1;
+    if (nextBtn) nextBtn.disabled = this._paperCurrentPage >= this._paperTotalPages;
+  }
+
+  removePaper() {
+    if (this._paperOverlay) {
+      this._paperOverlay.remove();
+      this._paperOverlay = null;
+    }
+    this._paperCanvas = null;
+    this._paperPageIndicator = null;
+    this._pdfDoc = null;
+    this._paperUrl = null;
+    this._paperPageCache = {};
+    this._paperCurrentPage = 1;
+    this._paperTotalPages = 0;
+    this._paperCollisionRect.active = false;
+  }
+
   loadState(state) {
     this.nodes = state.nodes.map(n => {
-      const node = { ...n, pinned: !!n.pinned };
+      const node = { ...n, pinned: !!n.pinned, hidden: !!n.hidden };
       if (node.pinned) {
         node.fx = node.x;
         node.fy = node.y;

@@ -23,10 +23,52 @@
       </div>
 
       <span class="create-room-toggle hidden" id="create-room-toggle">+ Create new room</span>
-      <div class="create-room-row" id="create-room-row">
+      <div class="create-room-form" id="create-room-form">
         <input type="text" id="new-room-name" placeholder="Room name">
-        <input type="number" id="new-room-duration" placeholder="Minutes" min="1" max="120" style="width: 80px;">
-        <button id="create-room-btn">Create</button>
+
+        <label>Attach paper <span style="font-weight: 400; text-transform: none; letter-spacing: 0;">(optional)</span></label>
+        <div class="paper-input-group">
+          <div class="paper-input-option">
+            <input type="file" id="paper-file-input" accept="application/pdf">
+          </div>
+          <div class="paper-input-divider"><span>or paste text below</span></div>
+          <textarea id="paper-text-input" class="paper-text-input" rows="4" placeholder="Paste paper text here..."></textarea>
+        </div>
+
+        <label class="extract-checkbox-label">
+          <input type="checkbox" id="extract-concepts-checkbox" checked>
+          Extract and seed concepts automatically
+        </label>
+
+        <div class="create-room-actions">
+          <button id="create-room-cancel" class="create-room-cancel-btn">Cancel</button>
+          <button id="create-room-btn">Create Room</button>
+        </div>
+
+        <div class="create-room-status" id="create-room-status"></div>
+
+        <div class="create-room-progress" id="create-room-progress">
+          <div class="progress-steps">
+            <div class="progress-step" data-step="create">
+              <div class="progress-step-dot"></div>
+              <span>Create room</span>
+            </div>
+            <div class="progress-step-connector"></div>
+            <div class="progress-step" data-step="extract">
+              <div class="progress-step-dot"></div>
+              <span>Extract concepts</span>
+            </div>
+            <div class="progress-step-connector"></div>
+            <div class="progress-step" data-step="review">
+              <div class="progress-step-dot"></div>
+              <span>Review</span>
+            </div>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progress-bar-fill"></div>
+          </div>
+          <div class="progress-status" id="progress-status"></div>
+        </div>
       </div>
 
       <button id="join-btn" disabled>Join Room</button>
@@ -170,6 +212,18 @@
       <div class="activity-list" id="activity-list"></div>
     </div>
 
+    <!-- PDF Reader Panel -->
+    <div id="pdf-panel" class="collapsed no-paper">
+      <div class="pdf-panel-toggle" id="pdf-panel-toggle" title="Open paper">&#128196;</div>
+      <div class="pdf-panel-header">
+        <h2 id="pdf-panel-title">Paper</h2>
+        <button class="pdf-panel-close" id="pdf-panel-close" title="Close">&times;</button>
+      </div>
+      <div class="pdf-panel-content">
+        <iframe id="pdf-panel-iframe" src="about:blank"></iframe>
+      </div>
+    </div>
+
   </div>
 
   <!-- Context Menu -->
@@ -304,6 +358,19 @@
       <div class="modal-actions">
         <button id="connections-skip">Skip</button>
         <button id="connections-add" class="primary" disabled>Add selected</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Seed Preview Modal -->
+  <div class="modal-overlay" id="seed-preview-modal">
+    <div class="modal-card seed-preview-card">
+      <h3 id="seed-preview-title">Extracted concepts</h3>
+      <p id="seed-preview-subtitle"></p>
+      <div class="seed-preview-body" id="seed-preview-body"></div>
+      <div class="modal-actions">
+        <button id="seed-preview-cancel">Cancel</button>
+        <button id="seed-preview-confirm" class="primary">Seed Graph</button>
       </div>
     </div>
   </div>

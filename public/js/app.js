@@ -19,6 +19,24 @@ let graphTitleMap = new Map(); // lowercase title -> nodeId (F10: shared graph a
 let lastInteractionEventType = null;
 let isAdmin = false;
 
+// ========== PDF.JS DYNAMIC LOADER (F17) ==========
+let _pdfJsLoaded = false;
+function loadPdfJs() {
+  if (_pdfJsLoaded) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload = () => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      _pdfJsLoaded = true;
+      resolve();
+    };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
 // ========== TOAST NOTIFICATIONS ==========
 function showToast(message, durationMs = 3500) {
   let container = document.getElementById('toast-container');
@@ -181,39 +199,198 @@ function updateJoinButton() {
 document.getElementById('login-name').addEventListener('input', updateJoinButton);
 
 document.getElementById('create-room-toggle').addEventListener('click', () => {
-  const row = document.getElementById('create-room-row');
-  row.classList.toggle('visible');
+  document.getElementById('create-room-form').classList.toggle('visible');
 });
+
+document.getElementById('create-room-cancel').addEventListener('click', () => {
+  document.getElementById('create-room-form').classList.remove('visible');
+  resetCreateRoomForm();
+});
+
+// Mutual exclusivity: PDF file vs pasted text
+document.getElementById('paper-file-input').addEventListener('change', (e) => {
+  const textarea = document.getElementById('paper-text-input');
+  if (e.target.files.length > 0) {
+    textarea.value = '';
+    textarea.disabled = true;
+  } else {
+    textarea.disabled = false;
+  }
+});
+
+document.getElementById('paper-text-input').addEventListener('input', (e) => {
+  const fileInput = document.getElementById('paper-file-input');
+  if (e.target.value.trim()) {
+    fileInput.disabled = true;
+  } else {
+    fileInput.disabled = false;
+  }
+});
+
+function resetCreateRoomForm() {
+  document.getElementById('new-room-name').value = '';
+  const fileInput = document.getElementById('paper-file-input');
+  fileInput.value = '';
+  fileInput.disabled = false;
+  const textInput = document.getElementById('paper-text-input');
+  textInput.value = '';
+  textInput.disabled = false;
+  document.getElementById('extract-concepts-checkbox').checked = true;
+  const status = document.getElementById('create-room-status');
+  status.classList.remove('visible');
+  status.innerHTML = '';
+  const progress = document.getElementById('create-room-progress');
+  progress.classList.remove('visible');
+  progress.querySelectorAll('.progress-step').forEach(s => s.classList.remove('active', 'done'));
+  progress.querySelectorAll('.progress-step-connector').forEach(c => c.classList.remove('done'));
+  document.getElementById('progress-bar-fill').style.width = '0%';
+  document.getElementById('progress-bar-fill').classList.remove('indeterminate');
+  document.getElementById('progress-status').textContent = '';
+}
 
 document.getElementById('create-room-btn').addEventListener('click', async () => {
   const name = document.getElementById('new-room-name').value.trim();
   if (!name) return;
 
-  const durationInput = document.getElementById('new-room-duration');
-  const body = { name };
-  if (durationInput && durationInput.value) {
-    body.durationMinutes = parseInt(durationInput.value, 10);
+  const fileInput = document.getElementById('paper-file-input');
+  const pastedText = document.getElementById('paper-text-input').value.trim();
+  const extractChecked = document.getElementById('extract-concepts-checkbox').checked;
+  const statusEl = document.getElementById('create-room-status');
+  const createBtn = document.getElementById('create-room-btn');
+  const loginCard = document.querySelector('.login-card');
+
+  const progressEl = document.getElementById('create-room-progress');
+  const progressFill = document.getElementById('progress-bar-fill');
+  const progressStatus = document.getElementById('progress-status');
+  const steps = progressEl.querySelectorAll('.progress-step');
+  const connectors = progressEl.querySelectorAll('.progress-step-connector');
+
+  const hasPaper = fileInput.files.length > 0 || pastedText;
+  const willExtract = extractChecked && hasPaper;
+
+  createBtn.disabled = true;
+
+  function setStep(stepName, statusText) {
+    const stepOrder = ['create', 'extract', 'review'];
+    const idx = stepOrder.indexOf(stepName);
+    steps.forEach((s, i) => {
+      s.classList.remove('active', 'done');
+      if (i < idx) s.classList.add('done');
+      else if (i === idx) s.classList.add('active');
+    });
+    connectors.forEach((c, i) => {
+      c.classList.toggle('done', i < idx);
+    });
+    // Progress bar: 0% at create, 33% during extract, 66% at review, 100% done
+    const pct = idx === 0 ? 10 : idx === 1 ? 40 : 75;
+    progressFill.classList.remove('indeterminate');
+    progressFill.style.width = pct + '%';
+    progressStatus.textContent = statusText;
   }
 
-  const res = await fetch('/api/rooms', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const room = await res.json();
-  selectedRoomId = room.id;
-  await loadRooms();
+  function setIndeterminate(statusText) {
+    progressFill.classList.add('indeterminate');
+    progressFill.style.width = '';
+    progressStatus.textContent = statusText;
+  }
 
-  // Auto-select the new room
-  const items = document.querySelectorAll('.room-item');
-  items.forEach(el => {
-    if (el.dataset.roomId === room.id) {
-      el.classList.add('selected');
+  function setDone(statusText) {
+    steps.forEach(s => { s.classList.remove('active'); s.classList.add('done'); });
+    connectors.forEach(c => c.classList.add('done'));
+    progressFill.classList.remove('indeterminate');
+    progressFill.style.width = '100%';
+    progressStatus.textContent = statusText;
+  }
+
+  // Lock UI and show progress
+  loginCard.classList.add('locked');
+  statusEl.classList.remove('visible');
+  progressEl.classList.add('visible');
+
+  setStep('create', 'Creating room...');
+
+  try {
+    const formData = new FormData();
+    formData.append('name', name);
+
+    if (fileInput.files.length > 0) {
+      formData.append('paper', fileInput.files[0]);
+    } else if (pastedText) {
+      formData.append('pastedText', pastedText);
     }
-  });
-  document.getElementById('create-room-row').classList.remove('visible');
-  if (durationInput) durationInput.value = '';
-  updateJoinButton();
+
+    const res = await fetch('/api/rooms', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Failed to create room');
+    }
+
+    const room = await res.json();
+    selectedRoomId = room.id;
+
+    // Extract and seed if requested
+    if (willExtract) {
+      setStep('extract', 'Extracting concepts from paper...');
+      setIndeterminate('Extracting concepts from paper...');
+
+      const extractRes = await fetch(`/api/rooms/${room.id}/extract-concepts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      if (extractRes.ok) {
+        const extractData = await extractRes.json();
+        const concepts = extractData.concepts || [];
+
+        if (concepts.length > 0) {
+          setStep('review', 'Review extracted concepts below.');
+
+          // Show preview modal and wait for user decision
+          const result = await showSeedPreviewModal(room.id, extractData);
+          if (result && result.seeded) {
+            setDone(`Seeded ${result.count} concepts.`);
+          } else {
+            setDone('Room created without seed concepts.');
+          }
+        } else {
+          setDone('No concepts extracted. Room created.');
+        }
+      } else {
+        setDone('Extraction failed. Room created without seed concepts.');
+      }
+    } else {
+      setDone('Room created.');
+    }
+
+    await loadRooms();
+    const items = document.querySelectorAll('.room-item');
+    items.forEach(el => {
+      if (el.dataset.roomId === room.id) {
+        el.classList.add('selected');
+      }
+    });
+    updateJoinButton();
+
+    setTimeout(() => {
+      document.getElementById('create-room-form').classList.remove('visible');
+      resetCreateRoomForm();
+      progressEl.classList.remove('visible');
+      loginCard.classList.remove('locked');
+      createBtn.disabled = false;
+    }, 1500);
+
+  } catch (e) {
+    progressFill.classList.remove('indeterminate');
+    progressFill.style.width = '0%';
+    progressStatus.textContent = `Error: ${e.message}`;
+    loginCard.classList.remove('locked');
+    createBtn.disabled = false;
+  }
 });
 
 document.getElementById('join-btn').addEventListener('click', () => {
@@ -253,6 +430,7 @@ socket.on('joined', async ({ user, room }) => {
   };
   graph.onCanvasClick = () => { cancelConnectionMode(); cancelMergeMode(); };
   graph.onNodeDoubleClick = handleNodeDoubleClick;
+  graph.onPaperDoubleClick = openPdfPanel;
 
   // Load existing state
   const res = await fetch(`/api/rooms/${selectedRoomId}/state`);
@@ -264,6 +442,21 @@ socket.on('joined', async ({ user, room }) => {
   );
   graph.userUpvotes = myUpvotes;
   graph.loadState(state);
+
+  // Load paper overlay if room has an attached PDF (F17)
+  if (room.has_paper && room.paper_filename) {
+    loadPdfJs().then(async () => {
+      try {
+        const pdfDoc = await pdfjsLib.getDocument(`/api/rooms/${room.id}/paper`).promise;
+        graph.showPaper(pdfDoc, room.paper_title || 'Paper', `/api/rooms/${room.id}/paper`);
+        document.getElementById('pdf-panel').classList.remove('no-paper');
+      } catch (err) {
+        console.error('Failed to load paper PDF:', err);
+      }
+    }).catch(err => {
+      console.error('Failed to load pdf.js library:', err);
+    });
+  }
 
   // Build shared graph title index (F10)
   graphTitleMap.clear();
@@ -395,7 +588,9 @@ socket.on('error', ({ message }) => {
 
 socket.on('node-added', (node) => {
   graph.addNode(node);
-  graphTitleMap.set(node.title.toLowerCase(), node.id);
+  if (!node.hidden) {
+    graphTitleMap.set(node.title.toLowerCase(), node.id);
+  }
   refreshInGraphMarkers();
 });
 
@@ -1934,6 +2129,321 @@ connectionsModal.addEventListener('click', (e) => {
   if (e.target === connectionsModal) hideConnectionsModal();
 });
 
+// ========== SEED PREVIEW MODAL ==========
+
+let seedPreviewRoomId = null;
+let seedPreviewData = null;
+let seedPreviewResolve = null;
+const seedPreviewModal = document.getElementById('seed-preview-modal');
+
+const SEED_TYPE_COLORS = {
+  entity: 'type-entity',
+  concept: 'type-concept',
+  method: 'type-method',
+  artifact: 'type-artifact',
+  event: 'type-event',
+  property: 'type-property'
+};
+
+function showSeedPreviewModal(roomId, extractData) {
+  seedPreviewRoomId = roomId;
+  seedPreviewData = extractData;
+
+  document.getElementById('seed-preview-title').textContent =
+    extractData.paperTitle ? `Extracted from: "${extractData.paperTitle}"` : 'Extracted concepts';
+  document.getElementById('seed-preview-subtitle').textContent =
+    extractData.paperAuthors || '';
+
+  const body = document.getElementById('seed-preview-body');
+  const primaryConcepts = extractData.concepts.filter(c => c.tier === 'primary');
+  const secondaryConcepts = extractData.concepts.filter(c => c.tier === 'secondary');
+  const relationships = extractData.relationships || [];
+
+  // Group secondary concepts by parent
+  const secondaryByParent = {};
+  for (const sc of secondaryConcepts) {
+    const parent = sc.parentConcept || 'Other';
+    if (!secondaryByParent[parent]) secondaryByParent[parent] = [];
+    secondaryByParent[parent].push(sc);
+  }
+
+  let html = '';
+
+  // --- Paper link info ---
+  if (extractData.paperTitle) {
+    html += `<div class="seed-preview-section" style="font-size:12px; color:var(--text-muted); font-weight:normal;">
+      Primary concepts will be connected to the paper with labeled edges.
+    </div>`;
+  }
+
+  // --- Primary Concepts ---
+  html += `<div class="seed-preview-section">Primary Concepts (${primaryConcepts.length})</div>`;
+  primaryConcepts.forEach((c, i) => {
+    const typeClass = SEED_TYPE_COLORS[(c.type || 'concept').toLowerCase()] || 'type-concept';
+    html += `<div class="seed-preview-item" data-tier="primary" data-index="${i}">
+      <input type="checkbox" checked data-tier="primary" data-index="${i}">
+      <span class="seed-preview-type-dot ${typeClass}" title="${escapeHtml(c.type || 'Concept')}"></span>
+      <div class="seed-preview-item-content">
+        <span class="seed-preview-item-title" data-tier="primary" data-index="${i}">${escapeHtml(c.title)}</span>
+        <div class="seed-preview-item-desc">${escapeHtml(c.description || '')}</div>
+      </div>
+    </div>`;
+  });
+
+  // --- Secondary Concepts (grouped by parent) ---
+  if (secondaryConcepts.length > 0) {
+    html += `<div class="seed-preview-section">Secondary Concepts (${secondaryConcepts.length})</div>`;
+    for (const [parentTitle, children] of Object.entries(secondaryByParent)) {
+      html += `<div class="seed-preview-parent-label">${escapeHtml(parentTitle)}</div>`;
+      html += '<div class="seed-preview-secondary">';
+      children.forEach(c => {
+        const globalIdx = secondaryConcepts.indexOf(c);
+        const typeClass = SEED_TYPE_COLORS[(c.type || 'concept').toLowerCase()] || 'type-concept';
+        html += `<div class="seed-preview-item" data-tier="secondary" data-index="${globalIdx}">
+          <input type="checkbox" checked data-tier="secondary" data-index="${globalIdx}">
+          <span class="seed-preview-type-dot ${typeClass}" title="${escapeHtml(c.type || 'Concept')}"></span>
+          <div class="seed-preview-item-content">
+            <span class="seed-preview-item-title" data-tier="secondary" data-index="${globalIdx}">${escapeHtml(c.title)}</span>
+            <div class="seed-preview-item-desc">${escapeHtml(c.description || '')}</div>
+          </div>
+        </div>`;
+      });
+      html += '</div>';
+    }
+  }
+
+  // --- Relationships ---
+  if (relationships.length > 0) {
+    html += `<div class="seed-preview-section">Relationships (${relationships.length})</div>`;
+    relationships.forEach((r, i) => {
+      const arrow = r.directed ? '\u2192' : '\u2194';
+      html += `<div class="seed-preview-relationship" data-index="${i}">
+        <input type="checkbox" checked data-rel-index="${i}">
+        <span class="seed-preview-rel-text">
+          <span class="rel-source">${escapeHtml(r.source)}</span>
+          <span class="rel-arrow"> ${arrow} ${escapeHtml(r.label)} ${arrow} </span>
+          <span class="rel-target">${escapeHtml(r.target)}</span>
+        </span>
+      </div>`;
+    });
+  }
+
+  body.innerHTML = html;
+
+  // --- Checkbox toggling ---
+  body.querySelectorAll('.seed-preview-item').forEach(item => {
+    const cb = item.querySelector('input[type="checkbox"]');
+    item.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.classList.contains('seed-preview-item-title') || e.target.classList.contains('seed-preview-item-title-input')) return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+    cb.addEventListener('change', () => {
+      item.classList.toggle('unchecked', !cb.checked);
+    });
+  });
+
+  body.querySelectorAll('.seed-preview-relationship').forEach(row => {
+    const cb = row.querySelector('input[type="checkbox"]');
+    row.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+    cb.addEventListener('change', () => {
+      row.classList.toggle('unchecked', !cb.checked);
+    });
+  });
+
+  // --- Inline title editing ---
+  body.querySelectorAll('.seed-preview-item-title').forEach(titleSpan => {
+    titleSpan.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (titleSpan.querySelector('input')) return;
+      const currentText = titleSpan.textContent;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'seed-preview-item-title-input';
+      input.value = currentText;
+      titleSpan.textContent = '';
+      titleSpan.appendChild(input);
+      input.focus();
+      input.select();
+
+      function commit() {
+        const newVal = input.value.trim() || currentText;
+        titleSpan.textContent = newVal;
+        // Update the stored data
+        const tier = titleSpan.dataset.tier;
+        const idx = parseInt(titleSpan.dataset.index);
+        const list = tier === 'primary' ? primaryConcepts : secondaryConcepts;
+        if (list[idx]) list[idx].title = newVal;
+      }
+
+      input.addEventListener('keydown', (ke) => {
+        if (ke.key === 'Enter') { ke.preventDefault(); commit(); }
+        if (ke.key === 'Escape') { titleSpan.textContent = currentText; }
+      });
+      input.addEventListener('blur', commit);
+    });
+  });
+
+  seedPreviewModal.classList.add('visible');
+
+  return new Promise(resolve => { seedPreviewResolve = resolve; });
+}
+
+function hideSeedPreviewModal(result) {
+  seedPreviewModal.classList.remove('visible');
+  seedPreviewRoomId = null;
+  seedPreviewData = null;
+  if (seedPreviewResolve) {
+    seedPreviewResolve(result);
+    seedPreviewResolve = null;
+  }
+}
+
+function computeRadialPositions(concepts) {
+  const primary = concepts.filter(c => c.tier === 'primary');
+  const secondary = concepts.filter(c => c.tier === 'secondary');
+  const startAngle = -Math.PI / 2; // Start at 12 o'clock
+  const primaryGap = (2 * Math.PI) / Math.max(primary.length, 1);
+
+  const parentAngleMap = new Map();
+  primary.forEach((c, i) => {
+    parentAngleMap.set(c.title, startAngle + primaryGap * i);
+  });
+
+  let orphanCounter = 0;
+
+  return concepts.map(c => {
+    let angle, radius;
+    if (c.tier === 'primary') {
+      radius = 300;
+      angle = parentAngleMap.get(c.title);
+    } else {
+      radius = 500;
+      const parentAngle = parentAngleMap.get(c.parentConcept);
+      if (parentAngle != null) {
+        const siblings = secondary.filter(s => s.parentConcept === c.parentConcept);
+        const sibIdx = siblings.indexOf(c);
+        const maxSpread = primaryGap * 0.4;
+        const spread = Math.min(0.3, maxSpread / Math.max(siblings.length - 1, 1));
+        angle = parentAngle + (sibIdx - (siblings.length - 1) / 2) * spread;
+      } else {
+        angle = startAngle + primaryGap * (orphanCounter + 0.5);
+        orphanCounter++;
+      }
+    }
+    return {
+      title: c.title,
+      description: c.description,
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius
+    };
+  });
+}
+
+document.getElementById('seed-preview-confirm').addEventListener('click', async () => {
+  if (!seedPreviewData || !seedPreviewRoomId) return;
+
+  const body = document.getElementById('seed-preview-body');
+  const primaryConcepts = seedPreviewData.concepts.filter(c => c.tier === 'primary');
+  const secondaryConcepts = seedPreviewData.concepts.filter(c => c.tier === 'secondary');
+  const relationships = seedPreviewData.relationships || [];
+
+  // Collect checked concepts
+  const checkedConcepts = [];
+  const checkedTitles = new Set();
+
+  body.querySelectorAll('.seed-preview-item').forEach(item => {
+    const cb = item.querySelector('input[type="checkbox"]');
+    if (!cb.checked) return;
+    const tier = item.dataset.tier;
+    const idx = parseInt(item.dataset.index);
+    const list = tier === 'primary' ? primaryConcepts : secondaryConcepts;
+    const concept = list[idx];
+    if (concept) {
+      checkedConcepts.push(concept);
+      checkedTitles.add(concept.title);
+    }
+  });
+
+  // Collect checked relationships, filtering out those with unchecked endpoints
+  const checkedRelationships = [];
+  body.querySelectorAll('.seed-preview-relationship').forEach(row => {
+    const cb = row.querySelector('input[type="checkbox"]');
+    if (!cb.checked) return;
+    const idx = parseInt(row.dataset.index);
+    const rel = relationships[idx];
+    if (rel && checkedTitles.has(rel.source) && checkedTitles.has(rel.target)) {
+      checkedRelationships.push(rel);
+    }
+  });
+
+  if (checkedConcepts.length === 0) {
+    hideSeedPreviewModal({ seeded: false });
+    return;
+  }
+
+  // Calculate radial positions: primary at 300px, secondary at 500px
+  const seedConcepts = computeRadialPositions(checkedConcepts);
+
+  // Add a central paper node and connect all primary concepts to it
+  const paperTitle = seedPreviewData.paperTitle || 'Paper';
+  const paperAuthors = seedPreviewData.paperAuthors || '';
+  const paperDescription = paperAuthors
+    ? `${paperTitle} by ${paperAuthors}`
+    : paperTitle;
+
+  seedConcepts.push({
+    title: paperTitle,
+    description: paperDescription,
+    x: 0,
+    y: 0,
+    pinned: true,
+    hidden: true
+  });
+
+  for (const concept of checkedConcepts) {
+    if (concept.tier === 'primary') {
+      checkedRelationships.push({
+        source: paperTitle,
+        target: concept.title,
+        label: concept.paperRelationship || 'discusses',
+        directed: true
+      });
+    }
+  }
+
+  const confirmBtn = document.getElementById('seed-preview-confirm');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Seeding...';
+
+  try {
+    await fetch(`/api/rooms/${seedPreviewRoomId}/seed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ concepts: seedConcepts, relationships: checkedRelationships })
+    });
+    hideSeedPreviewModal({ seeded: true, count: checkedConcepts.length });
+  } catch (e) {
+    console.error('Seed failed:', e);
+    hideSeedPreviewModal({ seeded: false });
+  } finally {
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = 'Seed Graph';
+  }
+});
+
+document.getElementById('seed-preview-cancel').addEventListener('click', () => {
+  hideSeedPreviewModal({ seeded: false });
+});
+
+seedPreviewModal.addEventListener('click', (e) => {
+  if (e.target === seedPreviewModal) hideSeedPreviewModal({ seeded: false });
+});
+
 // ========== CONNECTION MODE ==========
 
 function startConnectionMode(sourceId) {
@@ -2102,6 +2612,42 @@ document.getElementById('activity-toggle').addEventListener('click', () => {
   });
 });
 
+// ========== PDF PANEL ==========
+
+function openPdfPanel(pdfUrl) {
+  const panel = document.getElementById('pdf-panel');
+  const iframe = document.getElementById('pdf-panel-iframe');
+  const title = document.getElementById('pdf-panel-title');
+
+  if (iframe.src !== pdfUrl) {
+    iframe.src = pdfUrl;
+  }
+
+  if (graph && graph._paperTitle) {
+    title.textContent = graph._paperTitle;
+  }
+
+  panel.classList.remove('collapsed');
+}
+
+function closePdfPanel() {
+  document.getElementById('pdf-panel').classList.add('collapsed');
+}
+
+function togglePdfPanel() {
+  const panel = document.getElementById('pdf-panel');
+  if (panel.classList.contains('collapsed')) {
+    if (graph && graph._paperUrl) {
+      openPdfPanel(graph._paperUrl);
+    }
+  } else {
+    closePdfPanel();
+  }
+}
+
+document.getElementById('pdf-panel-toggle').addEventListener('click', togglePdfPanel);
+document.getElementById('pdf-panel-close').addEventListener('click', closePdfPanel);
+
 // ========== RESIZABLE CHAT PANEL ==========
 
 (function initChatResize() {
@@ -2191,6 +2737,7 @@ socket.on('left-room', () => {
 
   // Destroy graph
   if (graph) {
+    graph.removePaper();
     graph.nodes = [];
     graph.edges = [];
     graph.nodeMap.clear();

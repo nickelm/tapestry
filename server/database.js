@@ -97,11 +97,29 @@ async function initDatabase() {
   if (!roomCols.some(c => c.name === 'summary')) {
     db.run("ALTER TABLE rooms ADD COLUMN summary TEXT DEFAULT ''");
   }
+  if (!roomCols.some(c => c.name === 'paper_title')) {
+    db.run("ALTER TABLE rooms ADD COLUMN paper_title TEXT");
+  }
+  if (!roomCols.some(c => c.name === 'paper_authors')) {
+    db.run("ALTER TABLE rooms ADD COLUMN paper_authors TEXT");
+  }
+  if (!roomCols.some(c => c.name === 'paper_filename')) {
+    db.run("ALTER TABLE rooms ADD COLUMN paper_filename TEXT");
+  }
+  if (!roomCols.some(c => c.name === 'has_paper')) {
+    db.run("ALTER TABLE rooms ADD COLUMN has_paper INTEGER DEFAULT 0");
+  }
+  if (!roomCols.some(c => c.name === 'pasted_text')) {
+    db.run("ALTER TABLE rooms ADD COLUMN pasted_text TEXT");
+  }
 
   // Migration: add manual flag to nodes
   const nodeCols = queryAll("PRAGMA table_info(nodes)");
   if (!nodeCols.some(c => c.name === 'manual')) {
     db.run("ALTER TABLE nodes ADD COLUMN manual INTEGER DEFAULT 0");
+  }
+  if (!nodeCols.some(c => c.name === 'hidden')) {
+    db.run("ALTER TABLE nodes ADD COLUMN hidden INTEGER DEFAULT 0");
   }
 
   // Migration: rename legacy state values

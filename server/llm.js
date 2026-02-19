@@ -4,7 +4,7 @@ const Anthropic = AnthropicModule.default || AnthropicModule;
 class LLMService {
   constructor(apiKey) {
     this.client = new Anthropic({ apiKey: apiKey || process.env.ANTHROPIC_API_KEY });
-    this.chatModel = 'claude-sonnet-4-20250514';
+    this.chatModel = 'claude-sonnet-4-6';
     this.taskModel = 'claude-haiku-4-5-20251001';
   }
 
@@ -273,6 +273,110 @@ If no good connections exist, return [].`,
     } catch (e) {
       console.error('Failed to parse connection suggestions:', e);
       return [];
+    }
+  }
+
+  async extractConceptsFromPaper(text) {
+    // Pass 1 — Skeleton: extract primary concepts and relationships from first ~8000 tokens
+    const truncatedText = text.slice(0, 32000);
+
+    const pass1System = `You are extracting the conceptual structure from an academic paper.
+
+Extract the 8-15 most important concepts from this paper. For each concept:
+- title: concise name (2-5 words)
+- description: one sentence explaining this concept in the paper's context
+- type: one of [Entity, Concept, Method, Artifact, Event, Property]
+- paperRelationship: how the paper relates to this concept (2-4 word directional label, e.g. "introduces", "critiques", "builds upon", "evaluates", "proposes")
+
+Also identify 5-10 key relationships between concepts:
+- source: title of source concept
+- target: title of target concept
+- label: relationship description (2-4 words)
+- directed: true if directional, false if symmetric
+
+Return JSON:
+{
+  "paperTitle": "...",
+  "paperAuthors": "...",
+  "concepts": [{"title": "...", "description": "...", "type": "...", "paperRelationship": "..."}],
+  "relationships": [{"source": "...", "target": "...", "label": "...", "directed": true}]
+}
+
+Focus on this paper's contributions, methods, and findings — not generic background concepts. Respond ONLY with valid JSON, no markdown fences.`;
+
+    const pass1Result = await this._callAndParseJSON(
+      this.chatModel, pass1System,
+      `Paper text:\n${truncatedText}`,
+      2000
+    );
+
+    const primaryConcepts = Array.isArray(pass1Result.concepts) ? pass1Result.concepts : [];
+    const pass1Relationships = Array.isArray(pass1Result.relationships) ? pass1Result.relationships : [];
+
+    // Pass 2 — Detail: extract secondary concepts for each primary
+    const primaryList = primaryConcepts.map(c => `- ${c.title}: ${c.description}`).join('\n');
+
+    const pass2System = `You previously extracted these primary concepts from a paper:
+${primaryList}
+
+For each primary concept, extract 2-4 secondary concepts specifically discussed in connection with it — techniques, datasets, metrics, sub-components, or related work unique to this paper.
+
+For each secondary concept:
+- title: concise name (2-5 words)
+- description: one sentence
+- type: one of [Entity, Concept, Method, Artifact, Event, Property]
+- parentConcept: which primary concept this relates to
+- relationship: how it relates to the parent (2-4 word label)
+
+Return JSON:
+{
+  "secondaryConcepts": [{"title": "...", "description": "...", "type": "...", "parentConcept": "...", "relationship": "..."}]
+}
+
+Respond ONLY with valid JSON, no markdown fences.`;
+
+    const pass2Result = await this._callAndParseJSON(
+      this.chatModel, pass2System,
+      `Full paper text:\n${text}`,
+      4000
+    );
+
+    const secondaryConcepts = Array.isArray(pass2Result.secondaryConcepts) ? pass2Result.secondaryConcepts : [];
+
+    // Combine results
+    const allConcepts = [
+      ...primaryConcepts.map(c => ({ title: c.title, description: c.description, type: c.type, tier: 'primary', paperRelationship: c.paperRelationship || 'discusses' })),
+      ...secondaryConcepts.map(c => ({ title: c.title, description: c.description, type: c.type, tier: 'secondary', parentConcept: c.parentConcept }))
+    ];
+
+    const allRelationships = [
+      ...pass1Relationships,
+      ...secondaryConcepts.map(c => ({ source: c.title, target: c.parentConcept, label: c.relationship, directed: true }))
+    ];
+
+    return {
+      paperTitle: pass1Result.paperTitle || '',
+      paperAuthors: pass1Result.paperAuthors || '',
+      concepts: allConcepts,
+      relationships: allRelationships
+    };
+  }
+
+  async _callAndParseJSON(model, system, userMessage, maxTokens) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await this.client.messages.create({
+        model, max_tokens: maxTokens, system,
+        messages: [{ role: 'user', content: userMessage }]
+      });
+      try {
+        return JSON.parse(this._cleanJSON(response.content[0].text));
+      } catch (e) {
+        if (attempt === 0) {
+          console.error('JSON parse failed, retrying:', e.message);
+          continue;
+        }
+        throw new Error(`Failed to parse LLM JSON after retry: ${e.message}`);
+      }
     }
   }
 

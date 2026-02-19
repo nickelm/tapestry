@@ -7,12 +7,47 @@ const session = require('express-session');
 const { initDatabase, saveDb, queryAll, queryOne, run, logInteraction, saveFeedback, saveDiaryEntry, savePosttest } = require('./database');
 const { LLMService } = require('./llm');
 const archiver = require('archiver');
+const multer = require('multer');
+const pdfjs = require('pdfjs-dist/legacy/build/pdf.mjs');
+const fs = require('fs');
+
+async function parsePdf(buffer) {
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: false, verbosity: 0 }).promise;
+  const meta = await doc.getMetadata();
+  const info = meta.info || {};
+  let text = '';
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map(item => item.str).join(' ') + '\n';
+  }
+  await doc.destroy();
+  return { text, info };
+}
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
 const llm = new LLMService();
+
+// --- PDF UPLOAD CONFIG ---
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads', 'papers');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+    filename: (req, file, cb) => cb(null, `temp-${Date.now()}.pdf`)
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') cb(null, true);
+    else cb(new Error('Only PDF files are accepted'));
+  }
+});
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use(express.json());
@@ -59,14 +94,91 @@ app.get('/api/rooms', (req, res) => {
   res.json(queryAll('SELECT * FROM rooms ORDER BY created_at DESC'));
 });
 
-app.post('/api/rooms', requireAdmin, (req, res) => {
-  const { name, durationMinutes } = req.body;
+app.post('/api/rooms', requireAdmin, upload.single('paper'), async (req, res) => {
+  const name = req.body.name;
+  if (!name || !name.trim()) {
+    if (req.file) fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: 'Room name is required' });
+  }
+
   const id = uuidv4();
-  const duration = durationMinutes ? parseInt(durationMinutes, 10) : null;
-  run('INSERT INTO rooms (id, name, state, durationMinutes) VALUES (?, ?, ?, ?)',
-    [id, name, 'normal', duration]);
+  run('INSERT INTO rooms (id, name, state) VALUES (?, ?, ?)', [id, name.trim(), 'normal']);
+
+  if (req.file) {
+    try {
+      const finalPath = path.join(UPLOADS_DIR, `${id}.pdf`);
+      fs.renameSync(req.file.path, finalPath);
+
+      const pdfBuffer = fs.readFileSync(finalPath);
+      const pdfData = await parsePdf(pdfBuffer);
+
+      const paperTitle = (pdfData.info && pdfData.info.Title) || req.file.originalname.replace(/\.pdf$/i, '');
+      const paperAuthors = (pdfData.info && pdfData.info.Author) || null;
+
+      run('UPDATE rooms SET has_paper = 1, paper_title = ?, paper_authors = ?, paper_filename = ? WHERE id = ?',
+        [paperTitle, paperAuthors, req.file.originalname, id]);
+    } catch (err) {
+      console.error('PDF processing failed:', err);
+    }
+  } else if (req.body.pastedText && req.body.pastedText.trim()) {
+    run('UPDATE rooms SET has_paper = 1, pasted_text = ?, paper_title = ? WHERE id = ?',
+      [req.body.pastedText.trim(), 'Pasted text', id]);
+  }
+
   saveDb();
-  res.json({ id, name, state: 'normal', durationMinutes: duration });
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [id]);
+  res.json(room);
+});
+
+app.get('/api/rooms/:roomId/paper', (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT has_paper FROM rooms WHERE id = ?', [rid]);
+  if (!room || !room.has_paper) {
+    return res.status(404).json({ error: 'No paper attached to this room' });
+  }
+  const filePath = path.join(UPLOADS_DIR, `${rid}.pdf`);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Paper file not found' });
+  }
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${rid}.pdf"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+app.post('/api/rooms/:roomId/paper', requireAdmin, upload.single('paper'), async (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) {
+    if (req.file) fs.unlinkSync(req.file.path);
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file provided' });
+  }
+
+  try {
+    const oldPath = path.join(UPLOADS_DIR, `${rid}.pdf`);
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+
+    const finalPath = path.join(UPLOADS_DIR, `${rid}.pdf`);
+    fs.renameSync(req.file.path, finalPath);
+
+    const pdfBuffer = fs.readFileSync(finalPath);
+    const pdfData = await parsePdf(pdfBuffer);
+
+    const paperTitle = (pdfData.info && pdfData.info.Title) || req.file.originalname.replace(/\.pdf$/i, '');
+    const paperAuthors = (pdfData.info && pdfData.info.Author) || null;
+
+    run('UPDATE rooms SET has_paper = 1, paper_title = ?, paper_authors = ?, paper_filename = ? WHERE id = ?',
+      [paperTitle, paperAuthors, req.file.originalname, rid]);
+    saveDb();
+
+    res.json({ has_paper: 1, paper_title: paperTitle, paper_authors: paperAuthors, paper_filename: req.file.originalname });
+  } catch (err) {
+    console.error('PDF attachment failed:', err);
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: 'Failed to process PDF' });
+  }
 });
 
 app.get('/api/rooms/:roomId/state', (req, res) => {
@@ -106,15 +218,53 @@ app.post('/api/rooms/:roomId/seed', (req, res) => {
   const seeded = [];
   for (const concept of concepts) {
     const id = uuidv4();
-    run('INSERT INTO nodes (id, room_id, title, description, x, y, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [id, rid, concept.title, concept.description || '', concept.x || 0, concept.y || 0, systemUserId]);
+    run('INSERT INTO nodes (id, room_id, title, description, x, y, pinned, hidden, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, rid, concept.title, concept.description || '', concept.x || 0, concept.y || 0,
+       concept.pinned ? 1 : 0, concept.hidden ? 1 : 0, systemUserId]);
     run('INSERT INTO node_contributors (node_id, user_id) VALUES (?, ?)', [id, systemUserId]);
     run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [rid, systemUserId, 'System', 'seed', 'node', id, concept.title]);
     seeded.push({ id, ...concept });
   }
+
+  // Create edges from relationships if provided
+  const seededEdges = [];
+  const { relationships } = req.body;
+  if (relationships && relationships.length > 0) {
+    const titleToId = {};
+    for (const s of seeded) titleToId[s.title] = s.id;
+
+    for (const rel of relationships) {
+      const sourceId = titleToId[rel.source];
+      const targetId = titleToId[rel.target];
+      if (!sourceId || !targetId) continue;
+      const edgeId = uuidv4();
+      run('INSERT INTO edges (id, room_id, source_id, target_id, label, directed, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [edgeId, rid, sourceId, targetId, rel.label || 'relates to', rel.directed ? 1 : 0, systemUserId]);
+      run('INSERT INTO activity_log (room_id, user_id, user_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [rid, systemUserId, 'System', 'seed', 'edge', edgeId, `${rel.source} → ${rel.target}`]);
+      seededEdges.push({ id: edgeId, source_id: sourceId, target_id: targetId, label: rel.label, directed: rel.directed });
+    }
+  }
+
   saveDb();
-  res.json({ seeded });
+
+  // Broadcast to clients already in the room
+  for (const s of seeded) {
+    io.to(rid).emit('node-added', {
+      id: s.id, title: s.title, description: s.description,
+      x: s.x || 0, y: s.y || 0, created_by: systemUserId,
+      upvotes: 0, merged_count: 0,
+      pinned: s.pinned ? 1 : 0,
+      hidden: s.hidden ? 1 : 0,
+      contributors: [{ id: systemUserId, name: 'System', color: '#94a3b8' }]
+    });
+  }
+  for (const e of seededEdges) {
+    io.to(rid).emit('edge-added', e);
+  }
+
+  res.json({ seeded, edges: seededEdges });
 });
 
 app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
@@ -129,6 +279,45 @@ app.post('/api/rooms/:roomId/describe-concept', async (req, res) => {
   } catch (e) {
     console.error('describe-concept error:', e.message);
     res.status(500).json({ error: 'Failed to generate description' });
+  }
+});
+
+app.post('/api/rooms/:roomId/extract-concepts', async (req, res) => {
+  const rid = req.params.roomId;
+  const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  let text = null;
+
+  // Priority 1: PDF file on disk
+  const pdfPath = path.join(__dirname, '..', 'uploads', 'papers', `${rid}.pdf`);
+  if (fs.existsSync(pdfPath)) {
+    try {
+      const pdfBuffer = fs.readFileSync(pdfPath);
+      const pdfData = await parsePdf(pdfBuffer);
+      if (pdfData.text && pdfData.text.trim().length > 0) {
+        text = pdfData.text;
+      }
+    } catch (e) {
+      console.error('PDF parse failed, trying pasted text fallback:', e.message);
+    }
+  }
+
+  // Priority 2: pasted text stored in database
+  if (!text && room.pasted_text) {
+    text = room.pasted_text;
+  }
+
+  if (!text || text.trim().length === 0) {
+    return res.status(400).json({ error: 'No text available for extraction. Upload a PDF or paste text.' });
+  }
+
+  try {
+    const result = await llm.extractConceptsFromPaper(text);
+    res.json(result);
+  } catch (e) {
+    console.error('extract-concepts error:', e.message);
+    res.status(500).json({ error: 'Failed to extract concepts from paper' });
   }
 });
 
@@ -155,7 +344,7 @@ app.post('/api/rooms/:roomId/manual-seed', async (req, res) => {
     }
 
     // Step 2: Generate description
-    const existingNodes = queryAll('SELECT title FROM nodes WHERE room_id = ?', [rid]);
+    const existingNodes = queryAll('SELECT title FROM nodes WHERE room_id = ? AND (hidden IS NULL OR hidden = 0)', [rid]);
     const existingTitles = existingNodes.map(n => n.title);
     const description = await llm.generateConceptDescription(finalTitle, room.name, existingTitles);
 
@@ -190,7 +379,7 @@ app.post('/api/rooms/:roomId/manual-seed', async (req, res) => {
     res.json({ node });
 
     // Steps 4+5: Async post-creation (similarity + auto-connection)
-    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ?', [rid, nodeId]);
+    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ? AND (hidden IS NULL OR hidden = 0)', [rid, nodeId]);
     if (existing.length > 0) {
       try {
         const classification = await llm.findSimilarConcepts(
@@ -369,6 +558,12 @@ app.delete('/api/rooms/:roomId', requireAdmin, (req, res) => {
   const rid = req.params.roomId;
   const room = queryOne('SELECT * FROM rooms WHERE id = ?', [rid]);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+
+  // Clean up uploaded paper file if present
+  if (room.has_paper) {
+    const paperPath = path.join(UPLOADS_DIR, `${rid}.pdf`);
+    try { if (fs.existsSync(paperPath)) fs.unlinkSync(paperPath); } catch (e) { console.error('Failed to delete paper file:', e); }
+  }
 
   // Clean up all room data
   const nodeIds = queryAll('SELECT id FROM nodes WHERE room_id = ?', [rid]).map(n => n.id);
@@ -651,7 +846,7 @@ io.on('connection', (socket) => {
     activeAbortController = abortController;
 
     try {
-      const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
+      const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND (hidden IS NULL OR hidden = 0)', [currentRoom]);
       const ctx = getRoomContext();
       const result = await llm.chatWithExtraction(messages, existing, { signal: abortController.signal, roomName: ctx.roomName, roomSummary: ctx.roomSummary, breadcrumb });
       if (!abortController.signal.aborted) {
@@ -686,7 +881,7 @@ io.on('connection', (socket) => {
     if (!currentUser || !currentRoom) return;
     logInteraction(currentRoom, currentUser.id, currentUser.name, 'concept:harvest', { conceptTitle: title, edited: false });
 
-    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
+    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND (hidden IS NULL OR hidden = 0)', [currentRoom]);
 
     let classification = { duplicates: [], related: [], broader: [] };
     if (existing.length > 0) {
@@ -754,7 +949,7 @@ io.on('connection', (socket) => {
 
     // Create broader edges if provided (forwarded from similarity detection)
     if (broader && Array.isArray(broader) && broader.length > 0) {
-      const existing = queryAll('SELECT id, title FROM nodes WHERE room_id = ?', [currentRoom]);
+      const existing = queryAll('SELECT id, title FROM nodes WHERE room_id = ? AND (hidden IS NULL OR hidden = 0)', [currentRoom]);
       for (const b of broader) {
         const broaderNode = existing.find(c => c.id === b.id);
         if (!broaderNode) continue;
@@ -806,7 +1001,7 @@ io.on('connection', (socket) => {
   }
 
   async function suggestConnectionsForNode(nodeId, title, description, roomId, related = []) {
-    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ?', [roomId, nodeId]);
+    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND id != ? AND (hidden IS NULL OR hidden = 0)', [roomId, nodeId]);
     if (existing.length < 1) return;
 
     // Filter out nodes already connected to this node
@@ -882,7 +1077,7 @@ io.on('connection', (socket) => {
     const node = queryOne('SELECT * FROM nodes WHERE id = ?', [nodeId]);
     if (!node) return;
 
-    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ?', [currentRoom]);
+    const existing = queryAll('SELECT id, title, description FROM nodes WHERE room_id = ? AND (hidden IS NULL OR hidden = 0)', [currentRoom]);
 
     try {
       const expansions = await llm.expandConcept(node, existing, getRoomContext());
@@ -1219,6 +1414,21 @@ io.on('connection', (socket) => {
       io.to(currentRoom).emit('user-count', { count: roomSize });
     }
   });
+});
+
+// --- ERROR HANDLING ---
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'File too large. Maximum size is 20MB.' });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  if (err.message === 'Only PDF files are accepted') {
+    return res.status(400).json({ error: err.message });
+  }
+  next(err);
 });
 
 // --- STARTUP ---
